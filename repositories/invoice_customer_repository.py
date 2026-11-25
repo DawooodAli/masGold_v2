@@ -1,8 +1,11 @@
 """Persistence of «تغيير العميل»: the customer a finalized invoice belongs to. Runs on the caller's transaction; BIGINT ids leave as decimal strings.
 
-What moves with the invoice (and only this invoice): the invoice header, its customer snapshot (the printed name, code, mobile and place), the customer-ledger entries THIS invoice wrote and the
-old-gold movements it recorded. Nothing else of the old customer moves (later settlements, deposits, other invoices stay)."""
+What moves with the invoice (and only this invoice): the invoice header, its customer snapshot (the printed name, code, mobile and place), the account effect THIS invoice wrote (two new ledger rows,
+the original is never rewritten) and the customer attribution of the old-gold movements it recorded. Nothing else of the old customer moves (later settlements, deposits, other invoices stay)."""
 from repositories.base_repository import BaseRepository
+from repositories.customer_repository import CustomerRepository
+
+TYPE_CODE = "INVOICE_CUSTOMER_CHANGE"                                  # customer ledger type, migration 110
 
 
 def _text(row):
@@ -26,7 +29,7 @@ class InvoiceCustomerRepository(BaseRepository):
         return self._fetch_one("SELECT CAST(COALESCE(SUM(amount_delta), 0) AS DECIMAL(16,2)) AS balance FROM customer_transactions WHERE customer_id = %s", (int(customer_id),))["balance"]
 
     def ledger_rows(self, invoice_id, lock=False):
-        """The customer-ledger entries this invoice wrote (على العميل +, للعميل −), oldest first."""
+        """The customer-ledger rows tagged with this invoice (its own entry and any INVOICE_CUSTOMER_CHANGE rows; على العميل +, للعميل −), oldest first."""
         suffix = " FOR UPDATE" if lock else ""
         return [_text(r) for r in self._fetch_all(
             "SELECT id, customer_id, amount_delta FROM customer_transactions WHERE reference_type = 'INVOICE' AND reference_id = %s ORDER BY id" + suffix, (int(invoice_id),))]
@@ -47,21 +50,30 @@ class InvoiceCustomerRepository(BaseRepository):
         finally:
             cursor.close()
 
-    def move(self, invoice_id, old_customer_id, customer):
+    def move(self, invoice, old, customer, effect, *, user_id, reason):
         """Point the invoice at the new customer. The snapshot takes the new customer's CURRENT identity; its balance before / after belonged to the old customer and are unknown for the new one, so they become NULL
-        (never invented). Returns the number of ledger and old-gold rows that followed."""
-        new_id = int(customer["id"])
-        self._update("UPDATE invoices SET customer_id = %s WHERE id = %s", (new_id, int(invoice_id)))
+        (never invented). The account effect moves with two NEW ledger rows (the reverse on the old customer, the same amount on the new one); the invoice's original row is never touched. The old-gold
+        movements only change their customer attribution. Returns the number of ledger rows posted and of old-gold rows that followed."""
+        invoice_id, new_id = int(invoice["id"]), int(customer["id"])
+        old_id = None if old is None else int(old["id"])
+        self._update("UPDATE invoices SET customer_id = %s WHERE id = %s", (new_id, invoice_id))
         self._update("UPDATE invoice_customer_snapshots SET customer_id = %s, customer_code_snapshot = %s, customer_name_snapshot = %s, mobile_snapshot = %s, place_snapshot = %s, "
                      "customer_type_snapshot = %s, balance_before = NULL, balance_after = NULL WHERE invoice_id = %s",
-                     (new_id, customer["customer_code"], customer["name"], customer["mobile"], customer["place"], customer["customer_type_name"], int(invoice_id)))
-        ledger = 0
-        if old_customer_id is not None:
-            ledger = self._update("UPDATE customer_transactions SET customer_id = %s WHERE reference_type = 'INVOICE' AND reference_id = %s AND customer_id = %s", (new_id, int(invoice_id), int(old_customer_id)))
-            gold = self._update("UPDATE old_gold_movements SET customer_id = %s WHERE invoice_id = %s AND customer_id = %s", (new_id, int(invoice_id), int(old_customer_id)))
+                     (new_id, customer["customer_code"], customer["name"], customer["mobile"], customer["place"], customer["customer_type_name"], invoice_id))
+        posted = 0
+        if old_id is not None and effect != 0:
+            ledger = CustomerRepository(self.connection)
+            number = invoice["invoice_number"]
+            common = {"type_code": TYPE_CODE, "created_by_user_id": user_id, "reference_type": "INVOICE", "reference_id": invoice_id, "reference_code": number, "notes": reason,
+                      "metadata": {"old_customer_id": old_id, "new_customer_id": new_id}}
+            ledger.add_transaction(customer_id=old_id, amount_delta=-effect, description=f"نقل الفاتورة {number} إلى العميل {customer['name']}", **common)
+            ledger.add_transaction(customer_id=new_id, amount_delta=effect, description=f"نقل الفاتورة {number} من العميل {old['name']}", **common)
+            posted = 2
+        if old_id is not None:
+            gold = self._update("UPDATE old_gold_movements SET customer_id = %s WHERE invoice_id = %s AND customer_id = %s", (new_id, invoice_id, old_id))
         else:
-            gold = self._update("UPDATE old_gold_movements SET customer_id = %s WHERE invoice_id = %s AND customer_id IS NULL", (new_id, int(invoice_id)))
-        return ledger, gold
+            gold = self._update("UPDATE old_gold_movements SET customer_id = %s WHERE invoice_id = %s AND customer_id IS NULL", (new_id, invoice_id))
+        return posted, gold
 
     def audit(self, *, user_id, invoice, description, metadata):
         import json

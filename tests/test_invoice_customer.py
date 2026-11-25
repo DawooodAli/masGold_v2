@@ -46,9 +46,9 @@ class Repo:
     def dependents(self, invoice_id):
         return dict(self.store.dependents)
 
-    def move(self, invoice_id, old_customer_id, customer):
-        self.store.moves.append((int(invoice_id), old_customer_id, int(customer["id"])))
-        return len(self.store.ledger), 0
+    def move(self, invoice, old, customer, effect, *, user_id, reason):
+        self.store.moves.append((int(invoice["id"]), None if old is None else int(old["id"]), int(customer["id"]), effect, user_id, reason))
+        return (2 if old is not None and effect != 0 else 0), 0
 
     def audit(self, **values):
         self.store.audits.append(values)
@@ -89,8 +89,8 @@ class ChangeTests(unittest.TestCase):
     def test_a_manager_moves_the_invoice_with_a_reason_and_one_audit_of_both_customers_and_balances(self):
         service, store = build()
         result = service.change("5", "2", "اسم العميل اتكتب بالغلط", True)
-        self.assertEqual((result["customer"], result["ledger_rows_moved"]), ("أسلم بدران", 1))
-        self.assertEqual(store.moves, [(5, 1, 2)])
+        self.assertEqual((result["customer"], result["ledger_rows_posted"]), ("أسلم بدران", 2))
+        self.assertEqual(store.moves, [(5, 1, 2, D("29400.00"), 9, "اسم العميل اتكتب بالغلط")])
         meta = store.audits[0]["metadata"]
         self.assertEqual((meta["old_customer_id"], meta["new_customer_id"], meta["reason"]), (1, 2, "اسم العميل اتكتب بالغلط"))
         self.assertEqual((meta["account_effect"], meta["old_balance"], meta["old_balance_after"], meta["new_balance"], meta["new_balance_after"]),
@@ -122,6 +122,29 @@ class ChangeTests(unittest.TestCase):
         preview = service.preview("5", "2")
         self.assertEqual((preview["old_balance_after"], preview["new_balance_after"]), ("30400.00", "-1500.00"))
 
+    def test_an_invoice_without_an_account_entry_posts_no_ledger_row(self):
+        service, store = build()
+        store.ledger = []
+        result = service.change("5", "2", "x", True)
+        self.assertEqual((result["ledger_rows_posted"], store.moves[0][3]), (0, D("0.00")))
+
+    def test_a_second_change_moves_the_net_the_first_change_left_on_the_current_customer(self):
+        service, store = build()
+        store.invoice["customer_id"] = "2"                                  # already moved once: the original row (+) and the two change rows net per customer
+        store.ledger = [{"id": "50", "customer_id": "1", "amount_delta": D("29400.00")}, {"id": "60", "customer_id": "1", "amount_delta": D("-29400.00")},
+                        {"id": "61", "customer_id": "2", "amount_delta": D("29400.00")}]
+        preview = service.preview("5", "1")
+        self.assertEqual(preview["account_effect"], "29400.00")
+        service.change("5", "1", "x", True)
+        self.assertEqual(store.moves[0][1:4], (2, 1, D("29400.00")))
+
+    def test_a_net_left_on_a_customer_who_is_not_the_invoice_customer_blocks_the_change(self):
+        service, store = build()
+        store.ledger = [{"id": "50", "customer_id": "1", "amount_delta": D("29400.00")}, {"id": "61", "customer_id": "2", "amount_delta": D("5.00")}]
+        with self.assertRaises(InvoiceCustomerError) as caught:
+            service.change("5", "2", "x", True)
+        self.assertEqual(caught.exception.code, "LEDGER_MISMATCH")
+
     def test_a_walk_in_invoice_can_be_given_a_customer(self):
         service, store = build()
         store.invoice["customer_id"] = None
@@ -129,7 +152,7 @@ class ChangeTests(unittest.TestCase):
         preview = service.preview("5", "2")
         self.assertEqual((preview["old"]["id"], preview["old_balance"]), (None, None))
         service.change("5", "2", "x", True)
-        self.assertEqual(store.moves, [(5, None, 2)])
+        self.assertEqual(store.moves, [(5, None, 2, D("0.00"), 9, "x")])
 
     def test_the_preview_writes_nothing(self):
         service, store = build()

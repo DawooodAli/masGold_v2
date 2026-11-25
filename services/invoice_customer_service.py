@@ -1,7 +1,9 @@
 """تغيير العميل: a manager moves a finalized invoice to the right customer (owner 2026-11-25: the name is sometimes entered wrong).
 
-What follows the invoice to the new customer: the invoice header, its printed customer snapshot (name, code, mobile, place), the customer-ledger entry THIS invoice wrote (an amount «على العميل» /
-«للعميل» changes owner with it) and the old-gold movements it recorded. Nothing else moves: later settlements, deposits and the old customer's other invoices stay where they are.
+What follows the invoice to the new customer: the invoice header, its printed customer snapshot (name, code, mobile, place), the account effect THIS invoice wrote («على العميل» / «للعميل») and the
+old-gold movements it recorded. The account effect moves with two NEW ledger rows of type INVOICE_CUSTOMER_CHANGE (migration 110): the reverse on the old customer and the same amount on the new one; the
+original ledger row is never rewritten, and a later Reversal of the invoice reverses the per-customer net. The old-gold movements only change their customer attribution (the stock grams do not change).
+Nothing else moves: later settlements, deposits and the old customer's other invoices stay where they are.
 
 Refused: an invoice that is not FINALIZED, one that already has an Exchange, a Return or a correction / reversal (their entries would be left behind), the same customer, and an inactive or merged
 customer. TRANSACTION_CORRECT (OWNER / MANAGER) is rechecked in the transaction, the actor is the session user, a reason and one explicit confirmation are mandatory, and the change is audited with both
@@ -77,11 +79,14 @@ class InvoiceCustomerService:
         found = [DEPENDENT_TEXT[name] for name, count in repository.dependents(invoice_id).items() if count]
         if found:
             raise InvoiceCustomerError("HAS_DEPENDENTS", "لا يمكن تغيير العميل: على الفاتورة " + " و".join(found) + ". عالج ذلك أولًا.")
-        rows = repository.ledger_rows(invoice_id, lock=lock)
-        if any(r["customer_id"] is None or int(r["customer_id"]) != old_id for r in rows):
+        nets = {}
+        for r in repository.ledger_rows(invoice_id, lock=lock):                                   # the invoice's own entry plus any earlier change: the NET per customer is what the invoice left
+            key = int(r["customer_id"])
+            nets[key] = nets.get(key, Decimal("0.00")) + Decimal(str(r["amount_delta"]))
+        if any(net != 0 for key, net in nets.items() if key != old_id):
             raise InvoiceCustomerError("LEDGER_MISMATCH", "حركات الحساب المسجلة لهذه الفاتورة لا تطابق عميلها الحالي. راجع المدير.")
-        effect = sum((Decimal(str(r["amount_delta"])) for r in rows), Decimal("0.00"))
-        return invoice, old_id, locked.get(old_id), new, effect, len(rows)
+        effect = nets.get(old_id, Decimal("0.00")) if old_id is not None else Decimal("0.00")
+        return invoice, old_id, locked.get(old_id), new, effect
 
     # ------------------------------------------------------------------ read: what would change
     def preview(self, invoice_id, customer_id, *, _expected_actor=None):
@@ -93,7 +98,7 @@ class InvoiceCustomerService:
         new_number = _id(customer_id, "CUSTOMER_REQUIRED", "اختر العميل الجديد.")
         with self._transaction() as connection:
             repository = self._repository(connection)
-            invoice, old_id, old, new, effect, _rows = self._checked(repository, invoice_number, new_number, lock=False)
+            invoice, old_id, old, new, effect = self._checked(repository, invoice_number, new_number, lock=False)
             old_balance = None if old_id is None else repository.balance(old_id)
             new_balance = repository.balance(new_number)
         return self._facts(invoice, old, new, effect, old_balance, new_balance)
@@ -120,16 +125,16 @@ class InvoiceCustomerService:
         with self._transaction() as connection:
             actor = self._authorization.require_permission_for_write(connection, session_actor, PERMISSION)
             repository = self._repository(connection)
-            invoice, old_id, old, new, effect, _rows = self._checked(repository, invoice_number, new_number, lock=True)
+            invoice, old_id, old, new, effect = self._checked(repository, invoice_number, new_number, lock=True)
             old_balance = None if old_id is None else repository.balance(old_id)
             new_balance = repository.balance(new_number)
-            ledger_moved, gold_moved = repository.move(invoice["id"], old_id, new)
+            ledger_posted, gold_moved = repository.move(invoice, old, new, effect, user_id=actor.user_id, reason=text)
             facts = self._facts(invoice, old, new, effect, old_balance, new_balance)
             repository.audit(user_id=actor.user_id, invoice=invoice, description=f"تغيير العميل في الفاتورة {invoice['invoice_number']}",
                              metadata={"reason": text, "old_customer_id": old_id, "old_customer_name": facts["old"]["name"], "new_customer_id": new_number, "new_customer_name": new["name"],
-                                       "account_effect": facts["account_effect"], "ledger_rows_moved": ledger_moved, "old_gold_rows_moved": gold_moved,
+                                       "account_effect": facts["account_effect"], "ledger_rows_posted": ledger_posted, "old_gold_rows_moved": gold_moved,
                                        "old_balance": facts["old_balance"], "old_balance_after": facts["old_balance_after"],
                                        "new_balance": facts["new_balance"], "new_balance_after": facts["new_balance_after"]})
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
-        return {"invoice_id": str(invoice_number), "customer": new["name"], "ledger_rows_moved": ledger_moved}
+        return {"invoice_id": str(invoice_number), "customer": new["name"], "ledger_rows_posted": ledger_posted}
