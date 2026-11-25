@@ -108,6 +108,7 @@ class InvoiceHistoryViewModel(QObject):
         self._share_mobile = None
         self._sellers, self._seller_service, self._seller_message, self._seller_ok = [], None, "", False
         self._piece_service, self._piece_message, self._piece_ok = None, "", False
+        self._customer_service, self._customer_message, self._customer_ok, self._customer_preview = None, "", False, {}
         self._lookup_message = ""
         self._seal_service, self._seal_message, self._seal_state = None, "", ""
         # Typing in the search box: one query after a short pause, never one per keystroke.
@@ -513,6 +514,85 @@ class InvoiceHistoryViewModel(QObject):
             self.openInvoice(self._detail_id)
         self._run_search(self._page)
 
+    # ------------------------------------------------------------ change the customer of an invoice (a manager's correction of a wrong customer; owner 2026-11-25)
+    def _customer_instance(self):
+        if self._customer_service is None:
+            from services.invoice_customer_service import InvoiceCustomerService
+            self._customer_service = InvoiceCustomerService(self._session)
+        return self._customer_service
+
+    @Slot()
+    def resetCustomerChange(self):
+        self._customer_message, self._customer_ok, self._customer_preview = "", False, {}
+        self._latest["customerpreview"] = -1                                                 # a late answer for the previous choice is dropped
+        self.changed.emit()
+
+    @Slot(str)
+    def previewCustomerChange(self, customer_id):
+        """The two customers and the balances before / after; written nowhere. The service refuses what the change itself would refuse."""
+        self._customer_message, self._customer_ok, self._customer_preview = "", False, {}
+        if not self._detail or not self._detail.get("can_change_customer") or not customer_id:
+            self.changed.emit()
+            return
+        service, invoice_id = self._customer_instance(), self._detail["invoice_id"]
+        self._start("customerpreview", lambda _expected_actor: service.preview(invoice_id, customer_id, _expected_actor=_expected_actor))
+
+    def _on_customerpreview(self, result, error):
+        if error:
+            self._customer_message, self._customer_preview = str(error), {}
+            return
+        self._customer_preview = self._customer_view(result)
+
+    @staticmethod
+    def _customer_view(facts):
+        """The preview as short lines, never a story: who it is now, who it becomes, and what happens to the two accounts (only when the invoice wrote an account entry)."""
+        effect = Decimal(facts["account_effect"])
+        lines = [{"label": "العميل الحالي", "value": facts["old"]["name"] or "بدون عميل"},
+                 {"label": "العميل الجديد", "value": f"{facts['new']['name']} ({facts['new']['code']})"}]
+        if effect:
+            def owed(value):
+                value = Decimal(value)
+                return "الحساب متوازن" if value == 0 else f"{money(abs(value))} {'على العميل' if value > 0 else 'للعميل'}"
+            word = "على العميل" if effect > 0 else "للعميل"
+            lines.append({"label": "حساب هذه الفاتورة", "value": f"{money(abs(effect))} {word} — ينتقل مع الفاتورة"})
+            if facts["old_balance"] is not None:
+                lines.append({"label": "حساب العميل الحالي", "value": f"الآن {owed(facts['old_balance'])} • بعد {owed(facts['old_balance_after'])}"})
+            lines.append({"label": "حساب العميل الجديد", "value": f"الآن {owed(facts['new_balance'])} • بعد {owed(facts['new_balance_after'])}"})
+        return {"ok": True, "lines": lines, "movesAccount": bool(effect)}
+
+    @Slot(str, str, bool)
+    def changeCustomer(self, customer_id, reason, confirmed):
+        if not self._detail or not self._detail.get("can_change_customer") or "customer" in self._busy:
+            return
+        service, invoice_id = self._customer_instance(), self._detail["invoice_id"]
+        self._customer_message, self._customer_ok = "", False
+        self._start("customer", lambda _expected_actor: service.change(invoice_id, customer_id, reason, bool(confirmed), _expected_actor=_expected_actor))
+
+    def _on_customer(self, result, error):
+        if error:
+            self._customer_message, self._customer_ok = str(error), False
+            return
+        self._customer_message, self._customer_ok, self._customer_preview = "تم تغيير العميل.", True, {}
+        if self._detail_id:
+            self.openInvoice(self._detail_id)
+        self._run_search(self._page)
+
+    @Property(str, notify=changed)
+    def customerChangeMessage(self):
+        return self._customer_message
+
+    @Property(bool, notify=changed)
+    def customerChanged(self):
+        return self._customer_ok
+
+    @Property("QVariantMap", notify=changed)
+    def customerChangePreview(self):
+        return self._customer_preview
+
+    @Property(bool, notify=changed)
+    def customerChangeBusy(self):
+        return "customer" in self._busy or "customerpreview" in self._busy
+
     # ------------------------------------------------------------ verify an invoice's seal code (owner 2026-11-16, anti-forgery)
     def _seal_instance(self):
         if self._seal_service is None:
@@ -816,6 +896,7 @@ class InvoiceHistoryViewModel(QObject):
             "canReturn": bool(d.get("can_return")),
             "canCorrect": bool(d.get("can_correct")),
             "canChangeSeller": bool(d.get("can_change_seller")),
+            "canChangeCustomer": bool(d.get("can_change_customer")),
             "reversedText": f"تم عكس الفاتورة — {d['reversed_by']}" if d.get("reversed_by") else "",
             "showManager": bool(d["can_see_manager_details"]),
         }
@@ -1069,29 +1150,20 @@ class InvoiceHistoryViewModel(QObject):
         """Corrections beneath the original (never rewriting it): RV reversals and FC settlement corrections."""
         rows = []
         for c in self._detail.get("corrections", []) if self._detail else []:
-            source = {"INVOICE": "الفاتورة", "EXCHANGE": "الاستبدال", "RETURN": "المرتجع"}[c["source_type"]]
+            lines, lines_title = [], ""
             if c["correction_type"] == "FULL_REVERSAL":
                 title = f"تم عكس العملية — {c['code']}"
-                detail = f"{source} {c['source_reference']}"
             else:
-                title = f"تصحيح تسوية {c['code']}"
-                before = " + ".join(self._route(l) for l in (c["before"].get("legs") or [])) or "—"
-                after = " + ".join(self._route(l) for l in (c["after"].get("legs") or [])) or "—"
-                account_before, account_after = c["before"].get("account"), c["after"].get("account")
-                if account_before not in (None, "0.00") or account_after not in (None, "0.00"):
-                    before += f" + حساب العميل {money(account_before or '0')}"
-                    after += f" + حساب العميل {money(account_after or '0')}"
-                direction_before, direction_after = c["before"].get("direction"), c["after"].get("direction")
-                if direction_before in ("IN", "OUT") and direction_after in ("IN", "OUT") and direction_before != direction_after:
-                    # the money was turned around (2026-11-14): say which way each side moves, never a sign
-                    before = f"{RECEIVED_TEXT if direction_before == 'IN' else PAID_TEXT}: {before}"
-                    after = f"{RECEIVED_TEXT if direction_after == 'IN' else PAID_TEXT}: {after}"
-                detail = f"{source} {c['source_reference']}"
-            posted = " • ".join(f"{'النقدية' if p['ledger'] == 'CASH' else p['account_name'] or 'حساب العميل'} "
-                                f"{whole(p['amount'], signed=True)}" for p in c["posted"])
-            rows.append({"code": c["code"], "title": title, "detail": detail, "posted": posted,
-                         "before": "" if c["correction_type"] == "FULL_REVERSAL" else before,
-                         "after": "" if c["correction_type"] == "FULL_REVERSAL" else after,
+                # owner 2026-11-25: a settlement correction shows ONLY the new split, one line per part (no before / after, no narrative of the postings)
+                title = f"تصحيح التسوية {c['code']}"
+                after = c["after"]
+                lines = [self._route(l).replace("InstaPay", "إنستاباي") for l in (after.get("legs") or [])]                   # Latin text inside an Arabic line flips the amount
+                account = Decimal(str(after.get("account") or "0"))
+                direction = after.get("direction")
+                if account:
+                    lines.append(f"{'للعميل' if direction == 'OUT' or c['source_type'] == 'RETURN' else 'على العميل'} {money(account)}")
+                lines_title = {"IN": RECEIVED_TEXT, "OUT": PAID_TEXT}.get(direction, "التسوية بعد التصحيح")
+            rows.append({"code": c["code"], "title": title, "lines": lines, "linesTitle": lines_title,
                          "reason": f"السبب: {c['reason']}", "by": f"بواسطة: {c['actor'] or '—'}",
                          "time": datetime_text(c["occurred_at"]),
                          "isReversal": c["correction_type"] == "FULL_REVERSAL"})

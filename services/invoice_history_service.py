@@ -372,6 +372,8 @@ class InvoiceHistoryService:
                            and invoice["invoice_status"] == "FINALIZED",
             # Owner 2026-10-30: a wrong seller name can be corrected (also on an imported invoice); the seller service re-checks the right and the state.
             "can_change_seller": CORRECT_PERMISSION in actor.permissions and invoice["invoice_status"] == "FINALIZED" and not self._reversed_by(invoice),
+            # Owner 2026-11-25: a wrong customer can be changed on a finalized, not reversed invoice (the customer service re-checks the right, the state and the dependents).
+            "can_change_customer": CORRECT_PERMISSION in actor.permissions and invoice["invoice_status"] == "FINALIZED" and not self._reversed_by(invoice),
             # REQ-BILL-12: what happened AFTER the invoice; the snapshot above is never rewritten.
             "post_invoice": invoice.get("post_invoice"),
         }

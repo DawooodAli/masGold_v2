@@ -169,6 +169,70 @@ class HistoryUxQmlTests(qml_fixture.InvoiceHistoryPageTests):
         self.assertEqual(self.item("historyReturnTotal_0").property("text"), "18,750 ج")
         self.assertEqual(self.warnings, [])
 
+    def test_ux_corrections_show_only_the_new_split_at_every_size(self):
+        """Owner 2026-11-25: a settlement correction is the new split, one part per line; a reversal is its title and reason only."""
+        from datetime import datetime
+        vm = self.open_history()
+        vm.openInvoice("21")
+        self.wait_until(lambda: vm.detail)
+        after = {"direction": "IN", "legs": [{"method_code": "PHYSICAL_CASH", "amount": "20000.00"}, {"method_code": "INSTAPAY", "amount": "5000.00"}], "account": "5000.00"}
+        base = {"source_type": "INVOICE", "source_reference": "26092701", "actor": "admin", "occurred_at": datetime(2026, 11, 25, 20, 18), "before": {}, "posted": []}
+        vm._detail["corrections"] = [dict(base, code="FC000083", correction_type="SETTLEMENT_CORRECTION", reason="خطأ", after=after),
+                                     dict(base, code="RV000084", correction_type="FULL_REVERSAL", reason="خطأ", after={})]
+        vm.changed.emit()
+        QCoreApplication.processEvents()
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QCoreApplication.processEvents()
+            section = self.item("historyCorrectionsSection")
+            self.assertTrue(section.property("visible"), f"corrections hidden at {width}x{height}")
+            blocks = [self.item("historyCorrection_0"), self.item("historyCorrection_1")]
+            self.assertTrue(all(b is not None and b.property("width") > 0 for b in blocks))
+            self.assertLessEqual(blocks[0].property("width"), section.property("width"))
+            scroll = self.item("historyDetailScroll").property("contentItem")                         # bring the section into view for the screenshot (and prove it is reachable)
+            scroll.setProperty("contentY", max(0, section.mapToItem(scroll.property("contentItem"), 0, 0).y() - 20))
+            QCoreApplication.processEvents()
+            self.shot(f"corrections-{width}x{height}")
+        self.assertEqual(self.warnings, [])
+
+    def test_ux_change_customer_dialog_is_reachable_and_clear_at_every_size(self):
+        """Owner 2026-11-25: «تغيير العميل» sits in the customer card; the dialog shows the new customer and the two accounts as short lines and cannot be saved without a reason and the confirmation."""
+        vm = self.open_history()
+        vm.openInvoice("21")
+        self.wait_until(lambda: vm.detail)
+        vm._detail["can_change_customer"] = True
+        vm.changed.emit()
+        QCoreApplication.processEvents()
+        facts = {"invoice_number": "26092701", "old": {"id": "1", "code": "C000001", "name": "اسلم بدران"}, "new": {"id": "2", "code": "C000002", "name": "أسلم بدران"},
+                 "account_effect": "29400.00", "old_balance": "29400.00", "old_balance_after": "0.00", "new_balance": "-500.00", "new_balance_after": "28900.00"}
+        for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QCoreApplication.processEvents()
+            button = self.item("historyChangeCustomer")
+            self.assertTrue(button.property("visible"), f"button hidden at {width}x{height}")
+            self.assert_inside_window(button)
+            self.click(button)
+            dialog = self.item("historyCustomerDialog")
+            self.wait_until(lambda: dialog.property("opened"), "dialog did not open")
+            vm._on_customerpreview(facts, None)
+            vm.changed.emit()
+            QCoreApplication.processEvents()
+            for name in ("historyCustomerPicker", "historyCustomerPreview", "historyCustomerReason", "historyCustomerConfirm", "historyCustomerSave", "historyCustomerCancel"):
+                self.assert_inside_window(self.item(name))
+            save = self.item("historyCustomerSave")
+            self.assertFalse(save.property("enabled"), "saved without a reason and the confirmation")
+            self.item("historyCustomerReason").setProperty("text", "اسم العميل اتكتب بالغلط")
+            self.assertFalse(save.property("enabled"), "saved without the confirmation")
+            self.item("historyCustomerConfirm").setProperty("checked", True)
+            QCoreApplication.processEvents()
+            self.assertTrue(save.property("enabled"))
+            self.shot(f"change-customer-{width}x{height}")
+            self.click("historyCustomerCancel")
+            self.wait_until(lambda: not dialog.property("visible"), "cancel did not close the dialog")                       # fully gone (no exit transition left over the page)
+        self.assertEqual(self.warnings, [])
+
     def test_ux_summary_historical_cards_all_sizes(self):
         vm = self.open_history()
         vm.openInvoice("21")

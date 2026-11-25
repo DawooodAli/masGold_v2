@@ -718,6 +718,11 @@ Item {
                             Figure { label: "العنوان"; value: detailScroll.d.customerPlace || "—" }
                             Figure { label: "البائع"; value: detailScroll.d.salesperson || "—" }
                             Figure { label: "حُفظت بواسطة"; value: detailScroll.d.finalizedBy || "—" }
+                            // تغيير العميل (owner 2026-11-25): a manager moves the invoice to the right customer (TRANSACTION_CORRECT, re-checked by the service).
+                            Btn { objectName: "historyChangeCustomer"
+                                  text: "تغيير العميل"
+                                  visible: !!detailScroll.d.canChangeCustomer
+                                  onClicked: customerDialog.begin() }
                         }
                     }
                     Section {
@@ -1082,26 +1087,16 @@ Item {
                                       color: theme.textMuted; font.pixelSize: theme.fontTableHeader }
                                 Item { Layout.fillWidth: true }
                             }
-                            Txt { Layout.fillWidth: true; value: correctionBlock.modelData.detail; color: theme.textPrimary
-                                  font.pixelSize: theme.fontBodyStrong; font.bold: true; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                            Txt { Layout.fillWidth: true; visible: correctionBlock.modelData.lines.length > 0
+                                  value: correctionBlock.modelData.linesTitle + ":"; color: theme.textMuted
+                                  font.pixelSize: theme.fontBody }
                             Repeater {
-                                model: correctionBlock.modelData.after.length > 0
-                                       ? [{ "label": "قبل", "text": correctionBlock.modelData.before, "color": theme.textSecondary },
-                                          { "label": "بعد", "text": correctionBlock.modelData.after, "color": theme.gold }]
-                                       : []
-                                delegate: RowLayout {
-                                    required property var modelData
-                                    Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
-                                    Txt { Layout.preferredWidth: 46; value: modelData.label; color: theme.textMuted
-                                          font.pixelSize: theme.fontBody }
-                                    Txt { Layout.fillWidth: true; value: modelData.text; color: modelData.color
-                                          font.pixelSize: theme.fontSection; font.bold: true
-                                          wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                                }
+                                model: correctionBlock.modelData.lines
+                                delegate: Txt { required property string modelData
+                                                Layout.fillWidth: true; value: modelData; color: theme.gold
+                                                font.pixelSize: theme.fontSection; font.bold: true
+                                                wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             }
-                            Txt { Layout.fillWidth: true; visible: value.length > 0
-                                  value: "الأثر على الحسابات:  " + correctionBlock.modelData.posted
-                                  color: theme.textSecondary; font.pixelSize: theme.fontBody; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                             Txt { Layout.fillWidth: true; value: correctionBlock.modelData.reason; color: theme.textPrimary
                                   font.pixelSize: theme.fontBody; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                         }
@@ -1340,6 +1335,70 @@ Item {
                       enabled: sellerCombo.currentIndex >= 0 && sellerReason.text.trim().length > 0 && !!historyPage.vm
                       onClicked: historyPage.vm.changeSeller(String(historyPage.vm.sellerChoices[sellerCombo.currentIndex].id), sellerReason.text) }
                 Btn { objectName: "historySellerCancel"; text: "إلغاء"; onClicked: sellerDialog.close() }
+                Item { Layout.fillWidth: true }
+            }
+        }
+    }
+
+    Popup {
+        id: customerDialog
+        objectName: "historyCustomerDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(460, historyPage.width - 24)
+        modal: true
+        padding: 16
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { color: theme.bgSecondary; radius: theme.radiusCard; border.color: theme.cardBorder }
+        readonly property bool previewReady: !!historyPage.vm && !!historyPage.vm.customerChangePreview.ok
+        function begin() {
+            customerReason.text = ""; customerConfirm.checked = false
+            if (historyPage.vm) historyPage.vm.resetCustomerChange()
+            customerPick.clear()
+            open()
+        }
+        Connections {
+            target: historyPage.vm
+            function onChanged() { if (historyPage.vm && historyPage.vm.customerChanged && customerDialog.opened) customerDialog.close() }
+        }
+        contentItem: ColumnLayout {
+            spacing: 8
+            Txt { Layout.fillWidth: true; value: "تغيير عميل الفاتورة"; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection }
+            Txt { Layout.fillWidth: true; value: "العميل الجديد *" }
+            CustomerPicker { id: customerPick; objectName: "historyCustomerPicker"; Layout.fillWidth: true; clearable: true
+                             onCustomerSelected: function(customerId) { customerConfirm.checked = false; historyPage.vm.previewCustomerChange(customerId) }
+                             onSelectionCleared: { customerConfirm.checked = false; historyPage.vm.resetCustomerChange() } }
+            ColumnLayout {
+                objectName: "historyCustomerPreview"
+                Layout.fillWidth: true; spacing: 2
+                visible: customerDialog.previewReady
+                Repeater {
+                    model: customerDialog.previewReady ? historyPage.vm.customerChangePreview.lines : []
+                    delegate: RowLayout {
+                        required property var modelData
+                        Layout.fillWidth: true; layoutDirection: Qt.RightToLeft; spacing: 10
+                        Txt { Layout.preferredWidth: 120; value: modelData.label; color: theme.textMuted }
+                        Txt { Layout.fillWidth: true; value: modelData.value; color: theme.gold; font.bold: true
+                              wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                    }
+                }
+            }
+            Txt { Layout.fillWidth: true; value: "السبب *" }
+            TextField { id: customerReason; objectName: "historyCustomerReason"; Layout.fillWidth: true; placeholderText: "مثلاً: اسم العميل اتكتب بالغلط"
+                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
+            CheckBox { id: customerConfirm; objectName: "historyCustomerConfirm"; Layout.fillWidth: true
+                       text: "أؤكد أن هذا هو العميل الصحيح لهذه الفاتورة"; font.family: "Cairo" }
+            Txt { objectName: "historyCustomerMessage"; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                  visible: value.length > 0; color: theme.red
+                  value: !!historyPage.vm && !historyPage.vm.customerChanged ? historyPage.vm.customerChangeMessage : "" }
+            RowLayout {
+                Layout.fillWidth: true
+                layoutDirection: Qt.RightToLeft
+                spacing: 8
+                Btn { objectName: "historyCustomerSave"; primary: true; text: "حفظ"
+                      enabled: customerDialog.previewReady && customerReason.text.trim().length > 0 && customerConfirm.checked && !historyPage.vm.customerChangeBusy
+                      onClicked: historyPage.vm.changeCustomer(customerPick.selectedCustomerId, customerReason.text, customerConfirm.checked) }
+                Btn { objectName: "historyCustomerCancel"; text: "إلغاء"; onClicked: customerDialog.close() }
                 Item { Layout.fillWidth: true }
             }
         }
