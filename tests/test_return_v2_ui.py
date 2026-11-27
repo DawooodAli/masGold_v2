@@ -148,6 +148,24 @@ class ReturnPageTests(v2.ReturnV2Case):
                     self.assertTrue(field.mapToScene(QPointF(0, 0)).x() >= 0 and corner.x() <= width, name)
         self.assertEqual(self.warnings, [])
 
+    def test_a_short_payment_is_accepted_and_the_screen_says_the_rest_is_waived(self):
+        """Owner 2026-11-27: what was paid is accepted; the rest is recorded as waived. Nothing entered at all stays refused."""
+        from PySide6.QtTest import QTest
+        self.vm.toggleLine("X91")
+        self.wait_until(lambda: self.vm.summary.get("total") == "37,815 ج")
+        self.assertFalse(self.vm.canFinalize)                                          # nothing entered: refused
+        self.assertEqual(self.vm.settlement["remainingText"], "المتبقي 37,815 ج")
+        key = self.vm.legs[0]["key"]
+        self.vm.setLegAmount(key, "37000")
+        self.wait_until(lambda: self.vm.canFinalize)
+        QTest.qWait(150)
+        self.assertEqual((self.vm.settlement["remainingText"], self.vm.settlement["waived"], self.vm.problems),
+                         ("الباقي 815 ج يُسجَّل متنازَلًا عنه", "815 ج", []))
+        self.assertEqual(self.text("returnRemaining"), "الباقي 815 ج يُسجَّل متنازَلًا عنه")
+        self.vm.setLegAmount(key, "37816")                                             # more than the total: still refused
+        self.wait_until(lambda: not self.vm.canFinalize)
+        self.assertEqual(self.warnings, [])
+
     def test_weight_field_fits_999_999(self):
         from PySide6.QtGui import QFontMetricsF
         from PySide6.QtTest import QTest

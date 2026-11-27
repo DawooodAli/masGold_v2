@@ -151,7 +151,7 @@ Control {
             PickerButton {
                 objectName: "customerPickerOpenButton"
                 Layout.fillWidth: true
-                implicitHeight: picker.hasSelection ? 48 : 40
+                implicitHeight: picker.hasSelection ? 52 : 40
                 topPadding: 2
                 bottomPadding: 2
                 enabled: !picker.busy
@@ -171,7 +171,7 @@ Control {
                         Layout.fillWidth: true
                         visible: picker.hasSelection
                         value: (picker.selectedCustomer.balance_text || "—") + " — " + (picker.selectedCustomer.balance_meaning || "")
-                        font.pixelSize: 10
+                        font.pixelSize: 12
                         color: pickerTheme.gold
                         wrapMode: Text.NoWrap
                         elide: Text.ElideLeft
@@ -184,7 +184,7 @@ Control {
             visible: picker.errorMessage.length > 0 && !resultsPopup.opened
             value: picker.errorMessage
             color: pickerTheme.red
-            font.pixelSize: 10
+            font.pixelSize: 11
         }
     }
 
@@ -307,13 +307,13 @@ Control {
                             Layout.fillWidth: true
                             value: "رقم العميل: " + modelData.customer_id + " | " + (modelData.status_label || "") + " | " + (modelData.type_label || "—")
                             color: modelData.is_active ? pickerTheme.textMuted : pickerTheme.amber
-                            font.pixelSize: 10
+                            font.pixelSize: 11
                         }
                         PickerLabel {
                             Layout.fillWidth: true
                             value: "الهاتف: " + (modelData.mobile || "—") + " | المكان: " + (modelData.place || "—")
                             color: pickerTheme.textSecondary
-                            font.pixelSize: 10
+                            font.pixelSize: 11
                         }
                         PickerLabel {
                             Layout.fillWidth: true
@@ -325,7 +325,7 @@ Control {
                             visible: (modelData.active_warning_count || 0) > 0
                             value: "تحذيرات نشطة: " + (modelData.active_warning_count || 0)
                             color: pickerTheme.amber
-                            font.pixelSize: 10
+                            font.pixelSize: 11
                         }
                     }
                     MouseArea {

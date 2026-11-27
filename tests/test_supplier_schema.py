@@ -48,11 +48,11 @@ class SupplierSchemaTests(unittest.TestCase):
         for statement in (s for s in self.statements if s.upper().startswith("ALTER")):
             self.assertRegex(statement, r"acquisition_source|chk_inventory_acquisition_source")
 
-    def test_one_karat_per_invoice_the_groups_carry_none(self):
+    def test_one_account_karat_per_invoice_and_since_112_each_group_carries_its_own_actual_karat(self):
         invoice = self.model.tables["supplier_purchase_invoices"]["columns"]
         groups = self.model.tables["supplier_invoice_groups"]["columns"]
         self.assertEqual(invoice["karat_id"], {"type": "tinyint unsigned", "nullable": False})
-        self.assertNotIn("karat_id", groups)
+        self.assertEqual((groups["karat_id"]["nullable"], groups["credited_weight_grams"]["type"]), (False, "decimal(14,3)"))      # 112: the actual karat and the grams credited in the account karat
         self.assertEqual(groups["making_per_gram"]["type"], "decimal(12,2)")       # EGP per gram, never per piece
         self.assertNotIn("making_per_piece", groups)
 
@@ -110,7 +110,7 @@ class SupplierSchemaTests(unittest.TestCase):
 
     def test_the_manifest_hash_matches_the_committed_file(self):
         files = {f.name: f for f in load_chain(require_committed=False)}
-        self.assertEqual(len(files), 110)
+        self.assertEqual(len(files), 112)
         self.assertIn(FORWARD, files)
 
     # ------------------------------------------------------------------ acquisition source

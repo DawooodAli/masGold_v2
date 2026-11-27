@@ -5,7 +5,7 @@ from decimal import Decimal as D
 from unittest.mock import patch
 import unittest
 
-from PySide6.QtCore import QObject, QPointF, Qt
+from PySide6.QtCore import Q_ARG, QDate, QMetaObject, QObject, QPointF, Qt
 from PySide6.QtTest import QTest
 
 from tests import test_invoice_page_qml as harness
@@ -158,6 +158,161 @@ class GoldSettlePageTests(base.MarketTripHeatPageTests):
         self.wait_idle()
         QTest.qWait(150)
         self.assertEqual((len(self.db.settlements), len(self.db.sup_gold), self.settled_logo()), (1, 1, D("8.000")))
+
+
+    # ------------------------------------------------------------ Task 17: tripGoldSettleDialog keyboard flow (the supplier first; Return walks the typed fields)
+    def focus_name(self):
+        item = self.root.activeFocusItem()
+        return "none" if item is None else (item.objectName() or item.metaObject().className())
+
+    def record_settle_calls(self):
+        """Wrap the real slot: every call the dialog makes is recorded and still reaches the real view model and service."""
+        calls, original = [], self.tvm.settleGold
+
+        def recorder(*arguments):
+            calls.append(arguments)
+            return original(*arguments)
+
+        self.tvm.settleGold = recorder
+        return calls
+
+    def walk_settle_fields(self, reference="REF-17", notes="ملاحظة"):
+        """With a supplier and a source chosen and a weight typed: Return walks weight -> date -> reference -> notes without posting."""
+        self.click("custodyGoldSettleWeightField")
+        posted = len(self.db.settlements)
+        for field, text in (("custodyGoldSettleDateField", ""), ("custodyGoldSettleReferenceField", reference), ("custodyGoldSettleNotesField", notes)):
+            QTest.keyClick(self.root, Qt.Key_Return)
+            self.assertEqual(self.focus_name(), field)
+            self.assertEqual(len(self.db.settlements), posted)
+            if text:
+                self.type_text(text)
+        QTest.qWait(60)
+
+    def test_the_settlement_dialog_focuses_the_supplier_first_and_escape_closes_it_at_once(self):
+        self.logo_trip()
+        self.reveal(self.item("custodyGoldSettleButton"))
+        dialog = self.item("tripGoldSettleDialog")
+        QMetaObject.invokeMethod(dialog, "openFor", Q_ARG("QVariant", self.tvm.detail["id"]))      # no wait: focus and Escape work at once
+        self.assertEqual(self.focus_name(), "custodyGoldSettleSupplierCombo")
+        QTest.keyClick(self.root, Qt.Key_Escape)
+        self.closed("tripGoldSettleDialog")
+        self.assertEqual(len(self.db.settlements), 0)
+        self.open_settle()                                                                           # a fresh opening starts clean: the supplier has the focus, not the weight
+        self.assertEqual(self.focus_name(), "custodyGoldSettleSupplierCombo")
+        self.assertFalse(self.item("custodyGoldSettleWeightField").property("activeFocus"))
+        self.assertEqual(self.item("custodyGoldSettleWeightField").property("text"), "")
+        self.assertFalse(self.item("confirmCustodyGoldSettleButton").property("enabled"))
+
+    def test_return_walks_the_typed_fields_and_only_the_last_one_posts_the_same_arguments(self):
+        calls = self.record_settle_calls()
+        self.logo_trip()
+        self.open_settle()
+        self.fill_settle(1, "4")
+        self.walk_settle_fields()
+        self.assertEqual(calls, [])
+        QTest.keyClick(self.root, Qt.Key_Return)                                                     # Return in the notes field
+        self.wait_until(lambda: len(self.db.settlements) == 1, "settlement posted")
+        self.closed("tripGoldSettleDialog")
+        self.wait_idle()
+        self.assertEqual(len(calls), 1)
+        trip_id, supplier_id, karat_id, designation, weight, settled_on, reference, notes, request_key = calls[0]
+        self.assertEqual((trip_id, supplier_id, designation, weight, reference, notes),
+                         (str(self.tvm.detail["id"]), self.tvm.context["goldSuppliers"][0]["id"], "LOGO", "4", "REF-17", "ملاحظة"))
+        self.assertEqual(karat_id, self.tvm.detail["goldSettleSources"][0]["karatId"])
+        self.assertEqual(settled_on, QDate.currentDate().toString("yyyy-MM-dd"))
+        self.assertTrue(request_key)
+        self.assertEqual((len(self.db.settlements), len(self.db.sup_gold), self.settled_logo()), (1, 1, D("6.000")))
+        self.assertEqual(self.warnings, [])
+
+    def test_keypad_enter_in_the_last_field_posts_once_too(self):
+        calls = self.record_settle_calls()
+        self.logo_trip()
+        self.open_settle()
+        self.fill_settle(1, "2")
+        self.walk_settle_fields()
+        QTest.keyClick(self.root, Qt.Key_Enter, Qt.KeypadModifier)
+        self.wait_until(lambda: len(self.db.settlements) == 1, "settlement posted")
+        self.closed("tripGoldSettleDialog")
+        self.wait_idle()
+        self.assertEqual(len(calls), 1)
+
+    def test_enter_never_posts_what_the_button_refuses(self):
+        calls = self.record_settle_calls()
+        self.logo_trip()
+        self.open_settle()
+        self.type_in("custodyGoldSettleWeightField", "4")                                            # no supplier and no source chosen
+        self.walk_settle_fields()
+        QTest.keyClick(self.root, Qt.Key_Return)
+        QTest.qWait(300)
+        self.assertEqual((calls, len(self.db.settlements)), ([], 0))
+        self.assertTrue(self.item("tripGoldSettleDialog").property("visible"))
+        self.pick("custodyGoldSettleSupplierCombo", 1)                                               # chosen, but the weight is above the source / invalid
+        self.pick("custodyGoldSettleSourceCombo", 1)
+        for weight in ("10.001", "1.2345"):
+            self.type_replace("custodyGoldSettleWeightField", weight)
+            self.assertFalse(self.item("confirmCustodyGoldSettleButton").property("enabled"))
+            self.click("custodyGoldSettleNotesField")
+            QTest.keyClick(self.root, Qt.Key_Return)
+            QTest.qWait(300)
+            self.assertEqual((calls, len(self.db.settlements)), ([], 0))
+        self.assertTrue(self.item("tripGoldSettleDialog").property("visible"))
+
+    def test_a_repeated_key_or_button_plus_key_posts_one_settlement(self):
+        for how in ("two Returns", "button then Return"):
+            with self.subTest(how=how):
+                calls = self.record_settle_calls()
+                self.logo_trip()
+                self.open_settle()
+                self.fill_settle(1, "2")
+                self.walk_settle_fields()
+                before = len(self.db.settlements)
+                if how == "two Returns":
+                    QTest.keyClick(self.root, Qt.Key_Return)
+                    QTest.keyClick(self.root, Qt.Key_Return)
+                else:
+                    self.click("confirmCustodyGoldSettleButton")
+                    QTest.keyClick(self.root, Qt.Key_Return)
+                self.wait_until(lambda: len(self.db.settlements) > before, "settlement posted")
+                self.closed("tripGoldSettleDialog")
+                self.wait_idle()
+                QTest.qWait(200)
+                self.assertEqual((len(calls), len(self.db.settlements) - before), (1, 1))
+
+    def test_enter_is_refused_while_a_settlement_is_running(self):
+        calls = self.record_settle_calls()
+        self.logo_trip()
+        self.open_settle()
+        self.fill_settle(1, "2")
+        self.walk_settle_fields()
+        self.tvm._busy.add("write")
+        self.tvm.changed.emit()
+        QTest.qWait(60)
+        self.assertFalse(self.item("confirmCustodyGoldSettleButton").property("enabled"))
+        QTest.keyClick(self.root, Qt.Key_Return)
+        QTest.qWait(300)
+        self.assertEqual((calls, len(self.db.settlements)), ([], 0))
+        self.assertTrue(self.item("tripGoldSettleDialog").property("visible"))
+        self.tvm._busy.discard("write")
+        self.tvm.changed.emit()
+
+    def test_the_settlement_dialog_keeps_its_fit_and_supplier_focus_at_every_target_size(self):
+        self.logo_trip()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                self.open_settle()
+                self.assertEqual(self.focus_name(), "custodyGoldSettleSupplierCombo")
+                for name in ("custodyGoldSettleSupplierCombo", "custodyGoldSettleSourceCombo", "custodyGoldSettleWeightField", "custodyGoldSettleDateField",
+                             "custodyGoldSettleReferenceField", "custodyGoldSettleNotesField", "confirmCustodyGoldSettleButton", "cancelCustodyGoldSettleButton"):
+                    self.assert_inside_window(self.item(name))
+                dialog = self.item("tripGoldSettleDialog")                                           # a Popup is not an Item: its own rectangle
+                self.assertTrue(dialog.property("x") >= 0 and dialog.property("y") >= 0
+                                and dialog.property("x") + dialog.property("width") <= width
+                                and dialog.property("y") + dialog.property("height") <= height, (width, height))
+                QTest.keyClick(self.root, Qt.Key_Escape)
+                self.closed("tripGoldSettleDialog")
 
     def test_the_reversal_from_the_custody_history_explains_the_effect_and_refreshes_the_supplier_view(self):
         self.logo_trip()

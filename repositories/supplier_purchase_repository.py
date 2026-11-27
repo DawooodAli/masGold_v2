@@ -64,14 +64,15 @@ class SupplierPurchaseRepository(SupplierRepository):
             self._execute(
                 """
                 INSERT INTO supplier_invoice_groups (invoice_id, group_no, description, supplier_weight_grams,
-                    making_per_gram, making_total)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                    karat_id, credited_weight_grams, making_per_gram, making_total)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 """, (_id(invoice_id), group["group_no"], group["description"], group["supplier_weight_grams"],
-                      group["making_per_gram"], group["making_total"]))
+                      group["karat_id"], group["credited_weight_grams"], group["making_per_gram"], group["making_total"]))
 
     def groups(self, invoice_id):
-        return self._fetch_all("SELECT * FROM supplier_invoice_groups WHERE invoice_id = %s ORDER BY group_no",
-                               (_id(invoice_id),))
+        return self._fetch_all(
+            "SELECT g.*, k.karat_value FROM supplier_invoice_groups g JOIN karats k ON k.id = g.karat_id "
+            "WHERE g.invoice_id = %s ORDER BY g.group_no", (_id(invoice_id),))
 
     def lock_group(self, group_id):
         return self._fetch_one("SELECT * FROM supplier_invoice_groups WHERE id = %s FOR UPDATE", (_id(group_id),))
@@ -331,12 +332,12 @@ class SupplierPurchaseRepository(SupplierRepository):
         return self._fetch_all(
             """
             SELECT g.id AS group_id, g.invoice_id, g.group_no, g.description, g.supplier_weight_grams, g.making_per_gram,
-                   i.supplier_id, s.name AS supplier_name, i.supplier_reference, i.invoice_date, i.karat_id, k.karat_value,
+                   i.supplier_id, s.name AS supplier_name, i.supplier_reference, i.invoice_date, g.karat_id, k.karat_value,
                    COALESCE(p.actual_weight, 0) AS actual_weight, COALESCE(p.piece_count, 0) AS piece_count
             FROM supplier_invoice_groups g
             JOIN supplier_purchase_invoices i ON i.id = g.invoice_id AND i.status = 'POSTED'
             JOIN suppliers s ON s.id = i.supplier_id
-            JOIN karats k ON k.id = i.karat_id
+            JOIN karats k ON k.id = g.karat_id
             LEFT JOIN (SELECT sp.group_id, COUNT(*) AS piece_count, SUM(ii.weight_grams) AS actual_weight
                        FROM supplier_invoice_pieces sp JOIN inventory_items ii ON ii.id = sp.inventory_item_id
                        GROUP BY sp.group_id) p ON p.group_id = g.id

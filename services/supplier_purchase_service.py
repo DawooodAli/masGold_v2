@@ -1,10 +1,11 @@
 """Supplier purchase invoices, posting to the supplier ledgers, and piece-by-piece barcode intake.
 
 Locked rules implemented here:
-  * Each supplier has ONE dedicated karat (18, 21, 22 or 24) and every invoice inherits it (a different karat is refused).
-    The supplier invoice weight (the sum of its making-group weights) is the authoritative contractual gold: posting
-    writes +weight, in physical grams of that karat, to the immutable GOLD ledger. The ledger's Eq21 column is stored
-    only as an internal compatibility value and drives no supplier amount or direction.
+  * Each supplier has ONE dedicated karat (18, 21, 22 or 24) and every invoice inherits it as its ACCOUNT karat (a different invoice karat is refused).
+    Migration 112 (owner 2026-11-27): each making GROUP may carry its own karat (default = the account karat). The group's weight stays the ACTUAL grams of its
+    karat (the making and the intake use it); its grams converted into the account karat (weight x group karat / account karat, once, 3 dp ROUND_HALF_UP) are
+    what the shop owes: posting writes the sum of these credited grams, in the account karat, to the immutable GOLD ledger. A group of the account karat credits
+    exactly its own grams. The ledger's Eq21 column is stored only as an internal compatibility value and drives no supplier amount or direction.
   * Making is EGP per gram per group: gross making = SUM(group supplier weight x EGP/g), posted to the immutable
     MAKING ledger. Gold and making are independent; neither depends on any barcoded weight.
   * Posting is atomic and idempotent (row lock + status transition + unique ledger source keys + request key).
@@ -156,7 +157,23 @@ class SupplierPurchaseService:
         if not supplier["is_active"]:
             raise rules.SupplierRuleError("SUPPLIER_INACTIVE", "المورد غير نشط.")
         karat_id = self._inherited_karat(repository, supplier, karat_id)
-        normalized = rules.normalize_groups(groups)
+        account_karat_value = int(supplier["karat_value"])
+        resolved = []
+        for number, group in enumerate(groups or [], 1):
+            group = dict(group or {})
+            wanted = group.get("karat_id")
+            if wanted in (None, "", 0, "0") or str(wanted).strip() == str(karat_id):
+                group["karat_id"], group["karat_value"] = karat_id, account_karat_value
+            else:
+                try:
+                    karat = repository.get_karat(int(str(wanted).strip()))
+                except (TypeError, ValueError):
+                    karat = None
+                if karat is None or not karat["is_active"]:
+                    raise rules.SupplierRuleError("KARAT_NOT_FOUND", f"عيار المجموعة {number} غير موجود أو غير نشط.")
+                group["karat_id"], group["karat_value"] = int(karat["id"]), int(karat["karat_value"])
+            resolved.append(group)
+        normalized = rules.normalize_groups(resolved, account_karat_value)
         return {"supplier_id": supplier_id, "karat_id": karat_id,
                 "supplier_reference": clean_text(reference, REFERENCE_MAX, "رقم فاتورة المورد"),
                 "invoice_date": _date(invoice_date), "notes": clean_text(notes, NOTES_MAX, "الملاحظات"),
@@ -239,6 +256,18 @@ class SupplierPurchaseService:
         if invoice["status"] != rules.DRAFT:
             raise rules.SupplierRuleError("INVOICE_NOT_DRAFT", "لا يمكن تعديل الفاتورة بعد ترحيلها.")
 
+    @staticmethod
+    def _group_karat_value(repository, group, invoice):
+        """The karat value of a making group: the group's own (112), else the invoice's (= the supplier account karat) for a group that carries none."""
+        if group.get("karat_value") not in (None, ""):
+            return int(group["karat_value"])
+        if group.get("karat_id") in (None, "") or int(group["karat_id"]) == int(invoice["karat_id"]) or repository is None:
+            return int(invoice["karat_value"])
+        karat = repository.get_karat(int(group["karat_id"]))
+        if karat is None:
+            raise rules.SupplierRuleError("KARAT_NOT_FOUND", "عيار المجموعة غير موجود.")
+        return int(karat["karat_value"])
+
     # ------------------------------------------------------------------ posting
     def post_invoice(self, invoice_id, request_key, *, _expected_actor=None):
         """Atomic posting: status POSTED + one gold movement (+ one making movement when making > 0). Retrying the
@@ -266,8 +295,15 @@ class SupplierPurchaseService:
             self._inherited_karat(repository, supplier, invoice["karat_id"])
             groups = repository.groups(invoice_id)
             reconciled = rules.normalize_groups(
-                [{"weight": g["supplier_weight_grams"], "making_per_gram": g["making_per_gram"],
-                  "description": g["description"]} for g in groups]) if groups else None
+                [{"weight": g["supplier_weight_grams"], "making_per_gram": g["making_per_gram"], "description": g["description"],
+                  "karat_id": g.get("karat_id"), "karat_value": self._group_karat_value(repository, g, invoice)} for g in groups],
+                int(invoice["karat_value"])) if groups else None
+            if reconciled is not None and any(
+                    stored.get("credited_weight_grams") is not None
+                    and Decimal(str(stored["credited_weight_grams"])) != fresh["credited_weight_grams"]
+                    for stored, fresh in zip(groups, reconciled["groups"])):
+                raise rules.SupplierRuleError(
+                    "INVOICE_INCONSISTENT", "وزن مجموعة محوَّل لعيار الحساب لا يطابق عياره. راجع المجموعات قبل الترحيل.")
             if (reconciled is None or reconciled["total_weight"] != Decimal(str(invoice["supplier_weight_grams"]))
                     or reconciled["gross_making"] != Decimal(str(invoice["gross_making_total"]))):
                 raise rules.SupplierRuleError(
@@ -276,7 +312,7 @@ class SupplierPurchaseService:
             making_type = repository.making_type_id(rules.PURCHASE_MOVEMENT)
             if gold_type is None or making_type is None:
                 raise RuntimeError("supplier movement types are missing (migration 034)")
-            weight = Decimal(str(invoice["supplier_weight_grams"]))
+            weight = reconciled["credited_total"]                      # 112: the groups' grams converted into the account karat (the invoice weight itself when every group is of that karat)
             gross = Decimal(str(invoice["gross_making_total"]))
             # The stored Eq21 column is an internal compatibility field (NOT NULL, sign-checked); it drives nothing.
             eq21 = rules.equivalent_21(weight, invoice["karat_value"])
@@ -298,6 +334,7 @@ class SupplierPurchaseService:
                              entity_type="SUPPLIER_INVOICE", reference=code, description=label,
                              metadata={"supplier_id": invoice["supplier_id"], "karat_value": int(invoice["karat_value"]),
                                        "weight": str(weight), "gross_making": str(gross),
+                                       "actual_weight": str(Decimal(str(invoice["supplier_weight_grams"]))),
                                        "groups": len(groups)}, now=now)
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
@@ -369,7 +406,7 @@ class SupplierPurchaseService:
             try:
                 item_id = self._inventory.create_item_on_connection(
                     connection, actor_user_id=actor.user_id, employee_id=actor.employee_id,
-                    item_type_id=item_type_id, karat_id=invoice["karat_id"], weight_grams=weight,
+                    item_type_id=item_type_id, karat_id=int(group.get("karat_id") or invoice["karat_id"]), weight_grams=weight,
                     acquisition_source=INTAKE_SOURCE, category_id=int(category["id"]), factory_id=factory_id, size=size,
                     barcode=value, notes=notes, acquisition_making_per_gram=group["making_per_gram"])
             except ValueError as exc:
@@ -492,6 +529,10 @@ class SupplierPurchaseService:
             group_rows.append({
                 "id": str(group["id"]), "group_no": int(group["group_no"]), "description": group["description"] or "",
                 "supplier_weight": Decimal(str(group["supplier_weight_grams"])),
+                "karat_id": None if group.get("karat_id") is None else int(group["karat_id"]),
+                "karat_value": self._group_karat_value(None, group, invoice),
+                "credited_weight": Decimal(str(group["credited_weight_grams"] if group.get("credited_weight_grams") is not None
+                                               else group["supplier_weight_grams"])),
                 "adjustment": adjusted.get(int(group["id"]), Decimal("0")),
                 "effective_weight": Decimal(str(group["supplier_weight_grams"])) + adjusted.get(int(group["id"]), Decimal("0")),
                 "making_per_gram": now_rate, "original_making_per_gram": Decimal(str(group["making_per_gram"])),
@@ -572,18 +613,19 @@ class SupplierPurchaseService:
             gold_type = repository.gold_type_id(ADJUSTMENT_MOVEMENT)
             if gold_type is None:
                 raise RuntimeError("supplier movement type GROUP_ADJUSTMENT is missing (migration 092)")
+            credited_delta = rules.credited_weight(delta, self._group_karat_value(repository, group, invoice), invoice["karat_value"])   # 112: the ledger is in the account karat
             now = repository.db_now()
             adjustment_id = repository.insert_adjustment(invoice_id=invoice_id, group_id=group_id, delta=delta, reason=reason,
                                                          key=key, user_id=actor.user_id, now=now)
             code = rules.invoice_code(invoice_id)
             label = f"تعديل وزن مجموعة {int(group['group_no'])} - فاتورة {code}"
             repository.insert_gold_movement(
-                supplier_id=invoice["supplier_id"], type_id=gold_type, karat_id=invoice["karat_id"], weight_delta=delta,
-                eq21_delta=rules.equivalent_21(delta, invoice["karat_value"]), source_type=ADJUSTMENT_SOURCE,
+                supplier_id=invoice["supplier_id"], type_id=gold_type, karat_id=invoice["karat_id"], weight_delta=credited_delta,
+                eq21_delta=rules.equivalent_21(credited_delta, invoice["karat_value"]), source_type=ADJUSTMENT_SOURCE,
                 source_id=adjustment_id, reference=code, description=label, now=now, user_id=actor.user_id)
             repository.audit(actor=actor, event_type="SUPPLIER_INVOICE_GROUP_ADJUSTED", entity_id=invoice_id,
                              entity_type="SUPPLIER_INVOICE", reference=code, description=label,
-                             metadata={"group_id": group_id, "delta": str(delta), "reason": reason}, now=now)
+                             metadata={"group_id": group_id, "delta": str(delta), "credited_delta": str(credited_delta), "reason": reason}, now=now)
             if not self._session.is_current(session_actor):
                 raise PermissionError("انتهت جلسة الدخول.")
             return {"id": str(adjustment_id), "duplicate": False, "delta": delta}

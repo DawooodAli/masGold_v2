@@ -150,7 +150,8 @@ class DraftTests(SupplierCase):
                          ("DRAFT", 1, D("100.000"), D("14850.00")))
         self.assertEqual(len(self.purchases._repository(self.db).groups(draft["id"])), 3)
         self.assertEqual((self.db.gold, self.db.making), ([], []))
-        self.assertNotIn("karat_id", self.purchases._repository(self.db).groups(draft["id"])[0])   # karat is per invoice
+        first = self.purchases._repository(self.db).groups(draft["id"])[0]
+        self.assertEqual((first["karat_id"], first["credited_weight_grams"]), (1, D("40.000")))   # 112: a group of the account karat carries it and credits its own grams
 
     def test_the_invoice_weight_is_the_sum_of_its_groups(self):
         draft = self.draft(rows=[{"weight": "10", "making_per_gram": "100"}, {"weight": "2.5", "making_per_gram": "0"}])

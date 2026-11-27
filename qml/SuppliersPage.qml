@@ -684,7 +684,7 @@ Item {
                                     visible: page.detail.hasAccount !== false
                                     model: page.detail.goldBreakdown || []
                                     delegate: Txt { Layout.fillWidth: true; text: modelData.text; color: page.toneColor(modelData.tone)
-                                                    font.pixelSize: theme.fontTableHeader }
+                                                    font.pixelSize: theme.fontBody }
                                 }
                                 Txt { objectName: "goldNote"; Layout.fillWidth: true
                                       visible: page.detail.hasAccount !== false && !!page.detail.goldNote
@@ -985,11 +985,11 @@ Item {
                                                           color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                                     Txt { Layout.fillWidth: true; visible: page.compactInvoices
                                                           text: "الرصيد: " + modelData.balance; color: theme.textSecondary
-                                                          font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                          font.pixelSize: theme.fontBody; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                                 }
                                                 Txt { Layout.fillWidth: true; visible: !page.compactInvoices
                                                       text: "الرصيد: " + modelData.balance; color: theme.textSecondary
-                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                      font.pixelSize: theme.fontBody; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                                 Btn {
                                                     objectName: "reverseSettlementButton"
                                                     visible: !!page.vm && page.vm.canReverseSettlement && modelData.canReverse === true
@@ -1541,11 +1541,11 @@ Item {
                                                           color: page.toneColor(modelData.tone); wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                                     Txt { Layout.fillWidth: true; visible: page.compactInvoices
                                                           text: "الرصيد: " + modelData.balance; color: theme.textSecondary
-                                                          font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                          font.pixelSize: theme.fontBody; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                                 }
                                                 Txt { Layout.fillWidth: true; visible: !page.compactInvoices
                                                       text: "الرصيد: " + modelData.balance; color: theme.textSecondary
-                                                      font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
+                                                      font.pixelSize: theme.fontBody; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                                                 Btn {
                                                     objectName: "reversePaymentButton"
                                                     visible: !!page.vm && page.vm.canReversePayment && modelData.canReverse === true
@@ -1751,6 +1751,14 @@ Item {
             page.vm.loadPaymentContext(page.detail.id)
             open()
         }
+        // The one confirmation path, shared by the button and Enter in the last field. canSubmit is the button's own gate (context loaded, valid amount
+        // preview, an account the employee chose, a date, nothing running); a popup that is not fully open (it is fading out after a success) never submits.
+        function submit() {
+            if (!opened || !canSubmit) return
+            page.vm.payMaking(ctx.supplierId, method, sourceId, confirmSameParty && selectedMarketerIsSupplier,
+                              payAmountField.text, payDateField.text, payReferenceField.text, payNotesField.text, requestKey)
+        }
+        onAboutToShow: payAmountField.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(560, page.width - 24)
@@ -1860,20 +1868,24 @@ Item {
                             Txt { Layout.fillWidth: true; text: "المبلغ (ج) *" }
                             Field { id: payAmountField; objectName: "payAmountField"; Layout.fillWidth: true
                                     inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                    onTextChanged: payDialog.recompute() }
+                                    onTextChanged: payDialog.recompute()
+                                    onAccepted: payDateField.forceActiveFocus() }
                         }
                         ColumnLayout {
                             Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
                             Txt { Layout.fillWidth: true; text: "تاريخ الدفع (yyyy-MM-dd) *" }
-                            Field { id: payDateField; objectName: "payDateField"; Layout.fillWidth: true }
+                            Field { id: payDateField; objectName: "payDateField"; Layout.fillWidth: true
+                                    onAccepted: payReferenceField.forceActiveFocus() }
                         }
                     }
                     Txt { Layout.fillWidth: true; visible: payAmountField.text.trim().length > 0 && payDialog.preview.error !== ""
                           text: payDialog.preview.error; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
-                    Txt { Layout.fillWidth: true; text: "المرجع" }
-                    Field { id: payReferenceField; objectName: "payReferenceField"; Layout.fillWidth: true }
+                    Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
+                    Field { id: payReferenceField; objectName: "payReferenceField"; Layout.fillWidth: true
+                            onAccepted: payNotesField.forceActiveFocus() }
                     Txt { Layout.fillWidth: true; text: "ملاحظات" }
-                    Field { id: payNotesField; objectName: "payNotesField"; Layout.fillWidth: true }
+                    Field { id: payNotesField; objectName: "payNotesField"; Layout.fillWidth: true
+                            onAccepted: payDialog.submit() }                                                    // Return and keypad Enter
                     Rectangle {
                         Layout.fillWidth: true
                         implicitHeight: afterColumn.implicitHeight + 14
@@ -1909,10 +1921,7 @@ Item {
                     text: !!page.vm && page.vm.paying ? "جارٍ الحفظ…" : "تسجيل الدفعة"
                     primary: true
                     enabled: payDialog.canSubmit
-                    onClicked: page.vm.payMaking(payDialog.ctx.supplierId, payDialog.method,
-                                                 payDialog.sourceId, payDialog.confirmSameParty && payDialog.selectedMarketerIsSupplier,
-                                                 payAmountField.text, payDateField.text, payReferenceField.text,
-                                                 payNotesField.text, payDialog.requestKey)
+                    onClicked: payDialog.submit()
                 }
                 Btn { objectName: "cancelPayMakingButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.paying; onClicked: payDialog.close() }
@@ -2106,6 +2115,13 @@ Item {
             if (page.vm) page.vm.clearMessage()
             open()
         }
+        // The one confirmation path, shared by the button and Return / Enter in the reason field: it refuses a blank reason, an operation
+        // already running and a popup that is not fully open (a second key press while it fades out never submits twice).
+        function submit() {
+            if (!opened || !confirmReversePaymentButton.enabled) return
+            page.vm.reversePayment(paymentId, reverseReasonField.text)
+        }
+        onAboutToShow: reverseReasonField.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(480, page.width - 24)
@@ -2123,7 +2139,8 @@ Item {
                   wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: "يُعاد المبلغ إلى نفس الحساب الأصلي ويرجع موقف المصنعيات كما كان. تبقى الدفعة الأصلية في السجل ولا تُعدّل." }
             Txt { Layout.fillWidth: true; text: "سبب العكس *" }
-            Field { id: reverseReasonField; objectName: "reverseReasonField"; Layout.fillWidth: true }
+            Field { id: reverseReasonField; objectName: "reverseReasonField"; Layout.fillWidth: true
+                    onAccepted: reverseDialog.submit() }                                                        // Return and keypad Enter
             Txt { objectName: "reverseError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             RowLayout {
@@ -2131,12 +2148,13 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
                 Btn {
+                    id: confirmReversePaymentButton
                     objectName: "confirmReversePaymentButton"
                     text: !!page.vm && page.vm.reversing ? "جارٍ العكس…" : "عكس الدفعة"
                     accent: theme.red
                     primary: true
                     enabled: reverseReasonField.text.trim().length > 0 && !!page.vm && !page.vm.reversing
-                    onClicked: page.vm.reversePayment(reverseDialog.paymentId, reverseReasonField.text)
+                    onClicked: reverseDialog.submit()
                 }
                 Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.reversing
                       onClicked: reverseDialog.close() }
@@ -2229,6 +2247,13 @@ Item {
             if (page.pvm) page.pvm.clearMessage()
             open()
         }
+        // The one confirmation path, shared by the button and Return / Enter in the reason field: it refuses a blank reason, an operation
+        // already running and a popup that is not fully open (a second key press while it fades out never submits twice).
+        function submit() {
+            if (!opened || !confirmReverseAdjustmentButton.enabled) return
+            page.pvm.reverseAccountAdjustment(String(page.detail.id), adjustmentId, reverseAdjustmentReason.text, requestKey)
+        }
+        onAboutToShow: reverseAdjustmentReason.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(460, page.width - 24)
@@ -2245,17 +2270,18 @@ Item {
                   text: "هتتسجل حركة عكس معاكسة تمامًا للتسوية، والتسوية الأصلية تفضل ظاهرة في السجل." }
             Txt { Layout.fillWidth: true; text: "السبب *" }
             TextField { id: reverseAdjustmentReason; objectName: "reverseAdjustmentReason"; Layout.fillWidth: true; placeholderText: "سبب العكس"
-                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
+                        font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight
+                        onAccepted: reverseAdjustmentDialog.submit() }                                          // Return and keypad Enter
             Txt { objectName: "reverseAdjustmentError"; Layout.fillWidth: true; visible: text !== ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: !!page.pvm ? page.pvm.errorMessage : "" }
             RowLayout {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
-                Btn { objectName: "confirmReverseAdjustmentButton"; primary: true
+                Btn { id: confirmReverseAdjustmentButton; objectName: "confirmReverseAdjustmentButton"; primary: true
                       text: !!page.pvm && page.pvm.busy ? "جارٍ الحفظ…" : "تأكيد العكس"
                       enabled: reverseAdjustmentReason.text.trim().length > 0 && !!page.pvm && !page.pvm.busy
-                      onClicked: page.pvm.reverseAccountAdjustment(String(page.detail.id), reverseAdjustmentDialog.adjustmentId, reverseAdjustmentReason.text, reverseAdjustmentDialog.requestKey) }
+                      onClicked: reverseAdjustmentDialog.submit() }
                 Btn { objectName: "cancelReverseAdjustmentButton"; text: "إلغاء"; accent: theme.textSecondary; onClicked: reverseAdjustmentDialog.close() }
                 Item { Layout.fillWidth: true }
             }
@@ -2275,6 +2301,13 @@ Item {
             if (page.vm) page.vm.clearMessage()
             open()
         }
+        // The one confirmation path, shared by the button and Return / Enter in the reason field: it refuses a blank reason, an operation
+        // already running and a popup that is not fully open (a second key press while it fades out never submits twice).
+        function submit() {
+            if (!opened || !confirmReverseBarFeeButton.enabled) return
+            page.vm.reverseBarFee(entryId, reverseBarFeeReason.text)
+        }
+        onAboutToShow: reverseBarFeeReason.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(460, page.width - 24)
@@ -2289,16 +2322,17 @@ Item {
             Txt { Layout.fillWidth: true; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: "الأجر هيخرج من نقدية العهدة (لازم تكون العهدة مفتوحة ونقدية الأجر لسه موجودة) ويرجع خصم المصنعيات لو كان مخصوم." }
             Txt { Layout.fillWidth: true; text: "السبب *" }
-            TextField { id: reverseBarFeeReason; objectName: "reverseBarFeeReason"; Layout.fillWidth: true; placeholderText: "سبب العكس"; font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight }
+            TextField { id: reverseBarFeeReason; objectName: "reverseBarFeeReason"; Layout.fillWidth: true; placeholderText: "سبب العكس"; font.family: "Cairo"; horizontalAlignment: TextInput.AlignRight
+                        onAccepted: reverseBarFeeDialog.submit() }                                              // Return and keypad Enter
             Txt { objectName: "reverseBarFeeError"; Layout.fillWidth: true; visible: text !== ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: !!page.vm ? page.vm.errorMessage : "" }
             RowLayout {
                 Layout.fillWidth: true
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
-                Btn { objectName: "confirmReverseBarFeeButton"; primary: true; text: "تأكيد العكس"
+                Btn { id: confirmReverseBarFeeButton; objectName: "confirmReverseBarFeeButton"; primary: true; text: "تأكيد العكس"
                       enabled: reverseBarFeeReason.text.trim().length > 0 && !!page.vm && !page.vm.busy
-                      onClicked: page.vm.reverseBarFee(reverseBarFeeDialog.entryId, reverseBarFeeReason.text) }
+                      onClicked: reverseBarFeeDialog.submit() }
                 Btn { objectName: "cancelReverseBarFeeButton"; text: "إلغاء"; accent: theme.textSecondary; onClicked: reverseBarFeeDialog.close() }
                 Item { Layout.fillWidth: true }
             }
@@ -2445,6 +2479,13 @@ Item {
             if (page.pvm) { page.pvm.clearMessage(); page.pvm.loadReversal(inv.id) }
             open()
         }
+        // The one confirmation path, shared by the button and Return / Enter in the reason field. The button's own enabled state is the gate: it
+        // also requires the loaded effect preview and canReverse, so Enter can never reverse an invoice whose effect the service has not confirmed.
+        function submit() {
+            if (!opened || !confirmReverseInvoiceButton.enabled) return
+            page.pvm.reverseInvoice(invoiceId, reverseInvoiceReason.text)
+        }
+        onAboutToShow: reverseInvoiceReason.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(560, page.width - 24)
@@ -2511,7 +2552,8 @@ Item {
                         }
                     }
                     Txt { Layout.fillWidth: true; text: "سبب العكس *" }
-                    Field { id: reverseInvoiceReason; objectName: "reverseInvoiceReason"; Layout.fillWidth: true }
+                    Field { id: reverseInvoiceReason; objectName: "reverseInvoiceReason"; Layout.fillWidth: true
+                            onAccepted: reverseInvoiceDialog.submit() }                                         // Return and keypad Enter
                 }
             }
             Txt { objectName: "reverseInvoiceError"; Layout.fillWidth: true; visible: !!page.pvm && page.pvm.errorMessage !== ""
@@ -2521,13 +2563,14 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
                 Btn {
+                    id: confirmReverseInvoiceButton
                     objectName: "confirmReverseInvoiceButton"
                     text: !!page.pvm && page.pvm.reversing ? "جارٍ العكس…" : "تأكيد عكس الفاتورة"
                     accent: theme.red
                     primary: true
                     enabled: reverseInvoiceDialog.loaded && reverseInvoiceDialog.preview.canReverse === true
                              && reverseInvoiceReason.text.trim().length > 0 && !!page.pvm && !page.pvm.reversing
-                    onClicked: page.pvm.reverseInvoice(reverseInvoiceDialog.invoiceId, reverseInvoiceReason.text)
+                    onClicked: reverseInvoiceDialog.submit()
                 }
                 Btn { objectName: "cancelReverseInvoiceButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.pvm && !page.pvm.reversing; onClicked: reverseInvoiceDialog.close() }
@@ -2583,6 +2626,24 @@ Item {
             page.vm.loadSupplierGoldSources(page.detail.id)
             open()
         }
+        // The source comes first. Its combo is disabled while the source list loads (it starts loading in openFor), so until then the dialog's own
+        // content holds the focus (typing and Escape work at once) and the combo takes it the moment it is enabled, unless the employee already moved on.
+        property bool sourceFocusPending: false
+        function focusSource() {
+            if (!sourceFocusPending || !goldSettleSource.enabled) return
+            sourceFocusPending = false
+            goldSettleSource.forceActiveFocus()
+        }
+        onAboutToShow: { sourceFocusPending = true; contentItem.forceActiveFocus(); focusSource() }
+        onClosed: sourceFocusPending = false
+        // The one confirmation path, shared by the button and Enter in the last text field. The button's own enabled state is the gate (a source,
+        // weight, date, a valid preview, the declaration of a lot, the same-party confirmation, nothing running); a popup that is not fully open
+        // never submits. The weight-adjustment button is deliberately not part of it.
+        function submit() {
+            if (!opened || !confirmGoldSettleButton.enabled) return
+            page.vm.postSupplierGoldSettlement(sourceKey, goldSettleWeight.text, declarationCode, goldSettleSelf.checked,
+                                               goldSettleDate.text, goldSettleReference.text, goldSettleNotes.text, requestKey)
+        }
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(560, page.width - 24)
@@ -2614,6 +2675,7 @@ Item {
                         id: goldSettleSource; objectName: "goldSettleSource"; Layout.fillWidth: true
                         enabled: !!page.vm && !page.vm.supplierGoldSourcesLoading && !page.vm.settlingSupplierGold
                                  && !page.vm.adjustingSupplierCustody
+                        onEnabledChanged: if (enabled && goldSettleDialog.visible && goldSettleDialog.contentItem.activeFocus) goldSettleDialog.focusSource()
                         model: goldSettleDialog.sourceOptions; textRole: "text"
                         onActivated: {
                             var row = goldSettleDialog.sourceOptions[currentIndex]
@@ -2652,13 +2714,15 @@ Item {
                             Txt { Layout.fillWidth: true; text: "الوزن المُسلَّم الفعلي (جرام) *" }
                             Field { id: goldSettleWeight; objectName: "goldSettleWeight"; Layout.fillWidth: true
                                     inputMethodHints: Qt.ImhFormattedNumbersOnly
-                                    enabled: !!page.vm && !page.vm.adjustingSupplierCustody }
+                                    enabled: !!page.vm && !page.vm.adjustingSupplierCustody
+                                    onAccepted: goldSettleDate.forceActiveFocus() }
                         }
                         ColumnLayout {
                             Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
                             Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
                             Field { id: goldSettleDate; objectName: "goldSettleDate"; Layout.fillWidth: true
-                                    enabled: !!page.vm && !page.vm.adjustingSupplierCustody }
+                                    enabled: !!page.vm && !page.vm.adjustingSupplierCustody
+                                    onAccepted: goldSettleReference.forceActiveFocus() }
                         }
                     }
                     Rectangle {
@@ -2713,9 +2777,11 @@ Item {
                               text: "المسوقجي هو نفسه المورد: أؤكد أن رصيد ذهب المحل وحساب المورد منفصلان." }
                     }
                     Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
-                    Field { id: goldSettleReference; objectName: "goldSettleReference"; Layout.fillWidth: true }
+                    Field { id: goldSettleReference; objectName: "goldSettleReference"; Layout.fillWidth: true
+                            onAccepted: goldSettleNotes.forceActiveFocus() }
                     Txt { Layout.fillWidth: true; text: "ملاحظات" }
-                    Field { id: goldSettleNotes; objectName: "goldSettleNotes"; Layout.fillWidth: true }
+                    Field { id: goldSettleNotes; objectName: "goldSettleNotes"; Layout.fillWidth: true
+                            onAccepted: goldSettleDialog.submit() }                                             // Return and keypad Enter
                     Txt { objectName: "goldSettleAdjustmentSourceLabel"; Layout.fillWidth: true
                           visible: goldSettleDialog.preview.canIncreaseCustody === true
                           text: "مصدر فرق الوزن *"; font.bold: true }
@@ -2765,6 +2831,7 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
                 Btn {
+                    id: confirmGoldSettleButton
                     objectName: "confirmGoldSettleButton"
                     text: !!page.vm && page.vm.settlingSupplierGold ? "جارٍ التسجيل…" : "تسجيل التسوية"
                     primary: true
@@ -2772,10 +2839,7 @@ Item {
                              && !!page.vm && !page.vm.settlingSupplierGold && !page.vm.adjustingSupplierCustody
                              && goldSettleDialog.preview.valid === true && goldSettleDialog.declarationOk
                              && (goldSettleDialog.preview.isSelf !== true || goldSettleSelf.checked)
-                    onClicked: page.vm.postSupplierGoldSettlement(goldSettleDialog.sourceKey, goldSettleWeight.text,
-                                                                   goldSettleDialog.declarationCode, goldSettleSelf.checked,
-                                                                   goldSettleDate.text, goldSettleReference.text, goldSettleNotes.text,
-                                                                   goldSettleDialog.requestKey)
+                    onClicked: goldSettleDialog.submit()
                 }
                 Btn { objectName: "cancelGoldSettleButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.settlingSupplierGold && !page.vm.adjustingSupplierCustody; onClicked: goldSettleDialog.close() }
@@ -3148,6 +3212,13 @@ Item {
             if (page.vm) page.vm.clearMessage()
             open()
         }
+        // The one confirmation path, shared by the button and Return / Enter in the reason field: it refuses a blank reason, an operation
+        // already running and a popup that is not fully open (a second key press while it fades out never submits twice).
+        function submit() {
+            if (!opened || !confirmReverseReceiptButton.enabled) return
+            page.vm.reverseReceipt(receiptId, reverseReceiptReason.text)
+        }
+        onAboutToShow: reverseReceiptReason.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(500, page.width - 24)
@@ -3162,7 +3233,8 @@ Item {
             Txt { objectName: "reverseReceiptNote"; Layout.fillWidth: true; color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: "أثر التصحيح على الأرصدة: " + reverseReceiptDialog.effectText + " يتم ذلك معًا في عملية واحدة. لا يُثبت التصحيح وحده سلامة السبكة الأصلية؛ بعد عكس كل التسويات والاستلامات واستعادة كامل الرصيد يمكن طلب الرجوع العادي بتأكيد المالك أن السبكة نفسها سليمة كاملة، مع إقراره بأن الاستلام المسجَّل لم يقع فعليًا. يبقى الاستلام الأصلي في السجل ولا يُعدّل." }
             Txt { Layout.fillWidth: true; text: "سبب العكس *" }
-            Field { id: reverseReceiptReason; objectName: "reverseReceiptReason"; Layout.fillWidth: true }
+            Field { id: reverseReceiptReason; objectName: "reverseReceiptReason"; Layout.fillWidth: true
+                    onAccepted: reverseReceiptDialog.submit() }                                                 // Return and keypad Enter
             Txt { objectName: "reverseReceiptError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             RowLayout {
@@ -3170,12 +3242,13 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
                 Btn {
+                    id: confirmReverseReceiptButton
                     objectName: "confirmReverseReceiptButton"
                     text: !!page.vm && page.vm.receiptReversing ? "جارٍ التصحيح…" : "تأكيد التصحيح"
                     accent: theme.red
                     primary: true
                     enabled: reverseReceiptReason.text.trim().length > 0 && !!page.vm && !page.vm.receiptReversing
-                    onClicked: page.vm.reverseReceipt(reverseReceiptDialog.receiptId, reverseReceiptReason.text)
+                    onClicked: reverseReceiptDialog.submit()
                 }
                 Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.receiptReversing; onClicked: reverseReceiptDialog.close() }
                 Item { Layout.fillWidth: true }
@@ -3202,6 +3275,13 @@ Item {
             if (page.vm) page.vm.clearMessage()
             open()
         }
+        // The one confirmation path, shared by the button and Return / Enter in the reason field: it refuses a blank reason, a reversal
+        // already running and a popup that is not fully open (a second key press while it fades out after a success never submits twice).
+        function submit() {
+            if (!opened || !confirmReverseSettlementButton.enabled) return
+            page.vm.reverseSettlement(settlementId, reverseSettlementReason.text)
+        }
+        onAboutToShow: reverseSettlementReason.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(500, page.width - 24)
@@ -3220,7 +3300,8 @@ Item {
                         ? "أثر التصحيح على الأرصدة: " + reverseSettlementDialog.effectText + " (كرصيد جرامات فقط: لا يثبت هذا التصحيح سلامة السبكة الفعلية). لا يتحرك شيء في الكسر أو العهدة. تبقى التسوية الأصلية في السجل ولا تُعدّل."
                         : "يُسجَّل أن الذهب المُسلَّم استُرد فعليًا: يعود إلى كسر المحل بنفس الوزن والعيار المُسلَّمين، ويعود رصيد المورد كما كان قبل التسوية بنفس الكمية المحتسبة المخزَّنة. تبقى التسوية الأصلية في السجل ولا تُعدّل." }
             Txt { Layout.fillWidth: true; text: "سبب العكس *" }
-            Field { id: reverseSettlementReason; objectName: "reverseSettlementReason"; Layout.fillWidth: true }
+            Field { id: reverseSettlementReason; objectName: "reverseSettlementReason"; Layout.fillWidth: true
+                    onAccepted: reverseSettlementDialog.submit() }                                              // Return and keypad Enter
             Txt { objectName: "reverseSettlementError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             RowLayout {
@@ -3228,12 +3309,13 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
                 Btn {
+                    id: confirmReverseSettlementButton
                     objectName: "confirmReverseSettlementButton"
                     text: !!page.vm && page.vm.settlementReversing ? "جارٍ العكس…" : (reverseSettlementDialog.fromHolding ? "تأكيد التصحيح" : "عكس التسوية")
                     accent: theme.red
                     primary: true
                     enabled: reverseSettlementReason.text.trim().length > 0 && !!page.vm && !page.vm.settlementReversing
-                    onClicked: page.vm.reverseSettlement(reverseSettlementDialog.settlementId, reverseSettlementReason.text)
+                    onClicked: reverseSettlementDialog.submit()
                 }
                 Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.settlementReversing
                       onClicked: reverseSettlementDialog.close() }
@@ -3256,6 +3338,13 @@ Item {
             if (page.vm) page.vm.clearMessage()
             open()
         }
+        // The one confirmation path, shared by the button and Return / Enter in the reason field: it refuses a blank reason, an operation
+        // already running and a popup that is not fully open (a second key press while it fades out never submits twice).
+        function submit() {
+            if (!opened || !confirmReverseTransferButton.enabled) return
+            page.vm.reverseSupplierGoldTransfer(transferId, reverseTransferReason.text)
+        }
+        onAboutToShow: reverseTransferReason.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(480, page.width - 24)
@@ -3271,7 +3360,8 @@ Item {
             Txt { Layout.fillWidth: true; color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: "يرجع الذهب لحساب المورد المصدر بنفس الوزن والعيار الأصليين، ويرجع رصيد المورد المستلم. التسوية الأصلية تفضل ظاهرة في السجل." }
             Txt { Layout.fillWidth: true; text: "سبب العكس *" }
-            Field { id: reverseTransferReason; objectName: "reverseTransferReason"; Layout.fillWidth: true }
+            Field { id: reverseTransferReason; objectName: "reverseTransferReason"; Layout.fillWidth: true
+                    onAccepted: reverseTransferDialog.submit() }                                                // Return and keypad Enter
             Txt { objectName: "reverseTransferError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             RowLayout {
@@ -3279,12 +3369,13 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
                 Btn {
+                    id: confirmReverseTransferButton
                     objectName: "confirmReverseTransferButton"
                     text: !!page.vm && page.vm.transferReversing ? "جارٍ العكس…" : "عكس التسوية"
                     accent: theme.red
                     primary: true
                     enabled: reverseTransferReason.text.trim().length > 0 && !!page.vm && !page.vm.transferReversing
-                    onClicked: page.vm.reverseSupplierGoldTransfer(reverseTransferDialog.transferId, reverseTransferReason.text)
+                    onClicked: reverseTransferDialog.submit()
                 }
                 Btn { text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.vm && !page.vm.transferReversing
                       onClicked: reverseTransferDialog.close() }
@@ -3558,6 +3649,14 @@ Item {
             target: page.mvm
             function onReversedDone() { marketerReverseDialog.close() }
         }
+        // The one confirmation path, shared by the button and Return / Enter in the reason field: it refuses a blank reason, an operation
+        // already running and a popup that is not fully open (a second key press while it fades out never submits twice).
+        function submit() {
+            if (!opened || !confirmMarketerReverseButton.enabled) return
+            if (isSettlement) page.mvm.reverseSettlement(targetId, marketerReverseReason.text)
+            else page.mvm.reverseDocument(targetId, marketerReverseReason.text)
+        }
+        onAboutToShow: marketerReverseReason.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(500, page.width - 24)
@@ -3573,7 +3672,8 @@ Item {
             Txt { Layout.fillWidth: true; color: theme.amber; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone
                   text: "يُسجَّل عكس صريح بنفس الأرقام المخزّنة (يبقى المستند الأصلي كما هو). يُرفض العكس إذا كان رصيد النقدية أو الذهب لا يكفي بعده؛ اعكس ما يعتمد عليه أولًا." }
             Txt { Layout.fillWidth: true; text: "سبب العكس *" }
-            Field { id: marketerReverseReason; objectName: "marketerReverseReason"; Layout.fillWidth: true }
+            Field { id: marketerReverseReason; objectName: "marketerReverseReason"; Layout.fillWidth: true
+                    onAccepted: marketerReverseDialog.submit() }                                                // Return and keypad Enter
             Txt { objectName: "marketerReverseError"; Layout.fillWidth: true; visible: !!page.mvm && page.mvm.errorMessage !== ""
                   text: page.mvm ? page.mvm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             RowLayout {
@@ -3581,13 +3681,13 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
                 Btn {
+                    id: confirmMarketerReverseButton
                     objectName: "confirmMarketerReverseButton"
                     text: !!page.mvm && page.mvm.writing ? "جارٍ العكس…" : "تأكيد العكس"
                     accent: theme.red
                     primary: true
                     enabled: marketerReverseReason.text.trim().length > 0 && !!page.mvm && !page.mvm.writing
-                    onClicked: marketerReverseDialog.isSettlement ? page.mvm.reverseSettlement(marketerReverseDialog.targetId, marketerReverseReason.text)
-                                                                   : page.mvm.reverseDocument(marketerReverseDialog.targetId, marketerReverseReason.text)
+                    onClicked: marketerReverseDialog.submit()
                 }
                 Btn { objectName: "cancelMarketerReverseButton"; text: "إلغاء"; accent: theme.textSecondary; enabled: !!page.mvm && !page.mvm.writing
                       onClicked: marketerReverseDialog.close() }
@@ -3605,23 +3705,32 @@ Item {
         property string editId: ""
         property string editCode: ""
         property string editSupplierId: ""
-        property var preview: ({ valid: false, error: "", weightText: "—", makingText: "—", groupMaking: [] })
+        property var preview: ({ valid: false, error: "", weightText: "—", makingText: "—", creditText: "", groupMaking: [], groupCredit: [] })
         // The invoice karat is the supplier's dedicated karat (shown read-only). When editing a saved draft its own saved
         // karat is sent, so the service refuses an incompatible draft instead of silently converting it.
         property int editKaratId: 0
         property int editKaratValue: 0
         readonly property int invoiceKaratId: editId !== "" ? editKaratId : (page.detail.karatId || 0)
+        // 112: the supplier's ACCOUNT karat value; a group may carry another karat, which is converted into this one by the service rules (shown by the preview).
+        readonly property int invoiceKaratValue: editId !== "" ? editKaratValue : (page.detail.karatValue || 0)
+        readonly property var groupKaratOptions: page.masterKarats
+        function groupKaratIndex(karatId) {
+            var wanted = karatId > 0 ? karatId : invoiceKaratId
+            for (var i = 0; i < groupKaratOptions.length; ++i) if (groupKaratOptions[i].id == wanted) return i
+            return -1
+        }
         readonly property string invoiceKaratText: editId !== "" ? "عيار " + editKaratValue : (page.detail.karatText || "")
         function collect() {
             var rows = []
             for (var i = 0; i < groupModel.count; ++i) {
                 var g = groupModel.get(i)
-                rows.push({ weight: g.weight, rate: g.rate, description: g.description })
+                rows.push({ weight: g.weight, rate: g.rate, description: g.description,
+                            karatId: g.karatId > 0 ? g.karatId : invoiceKaratId, karatValue: g.karatValue > 0 ? g.karatValue : invoiceKaratValue })
             }
             return rows
         }
         function recompute() {
-            if (page.pvm) preview = page.pvm.previewGroups(collect())
+            if (page.pvm) preview = page.pvm.previewGroupsKarat(collect(), invoiceKaratValue)
         }
         function openForEdit(form) {
             editId = form.id
@@ -3630,7 +3739,8 @@ Item {
             requestKey = ""
             groupModel.clear()
             for (var i = 0; i < form.groups.length; ++i)
-                groupModel.append({ weight: form.groups[i].weight, rate: form.groups[i].rate, description: form.groups[i].description })
+                groupModel.append({ weight: form.groups[i].weight, rate: form.groups[i].rate, description: form.groups[i].description,
+                                    karatId: form.groups[i].karatId, karatValue: form.groups[i].karatValue })
             referenceField.text = form.reference
             notesField2.text = form.notes
             dateField.text = form.date
@@ -3646,7 +3756,7 @@ Item {
             editSupplierId = ""
             requestKey = page.pvm ? page.pvm.newRequestKey() : ""
             groupModel.clear()
-            groupModel.append({ weight: "", rate: "", description: "" })
+            groupModel.append({ weight: "", rate: "", description: "", karatId: 0, karatValue: 0 })
             referenceField.text = ""
             notesField2.text = ""
             dateField.text = Qt.formatDate(new Date(), "yyyy-MM-dd")
@@ -3712,7 +3822,12 @@ Item {
                           font.bold: true }
                     Repeater {
                         model: groupModel
-                        delegate: RowLayout {
+                        delegate: ColumnLayout {
+                          id: groupRow
+                          property int rowKarat: model.karatId
+                          Layout.fillWidth: true
+                          spacing: 2
+                          RowLayout {
                             Layout.fillWidth: true
                             layoutDirection: Qt.RightToLeft
                             spacing: 6
@@ -3720,11 +3835,22 @@ Item {
                                   color: theme.textMuted }
                             Field {
                                 objectName: "groupWeight_" + index
-                                Layout.preferredWidth: 130
+                                Layout.preferredWidth: 124
                                 placeholderText: "الوزن (جرام)"
                                 inputMethodHints: Qt.ImhFormattedNumbersOnly
                                 text: model.weight
                                 onTextEdited: { groupModel.setProperty(index, "weight", text); newInvoiceDialog.recompute() }
+                            }
+                            Combo {
+                                objectName: "groupKarat_" + index
+                                Layout.preferredWidth: 96
+                                model: newInvoiceDialog.groupKaratOptions; textRole: "label"
+                                currentIndex: newInvoiceDialog.groupKaratIndex(groupRow.rowKarat)
+                                onActivated: function(i) {
+                                    groupModel.setProperty(index, "karatId", newInvoiceDialog.groupKaratOptions[i].id)
+                                    groupModel.setProperty(index, "karatValue", newInvoiceDialog.groupKaratOptions[i].karat_value)
+                                    newInvoiceDialog.recompute()
+                                }
                             }
                             Field {
                                 objectName: "groupRate_" + index
@@ -3747,6 +3873,14 @@ Item {
                             Btn { text: "✕"; accent: theme.red; implicitWidth: 34; leftPadding: 4; rightPadding: 4
                                   enabled: groupModel.count > 1
                                   onClicked: { groupModel.remove(index); newInvoiceDialog.recompute() } }
+                          }
+                          // 112: a group of another karat is converted into the supplier's account karat (the text comes from the service rules).
+                          Txt { objectName: "groupCredit_" + index
+                                Layout.fillWidth: true; Layout.rightMargin: 28
+                                visible: text !== ""
+                                text: newInvoiceDialog.preview.valid && index >= 0 && index < newInvoiceDialog.preview.groupCredit.length
+                                      ? newInvoiceDialog.preview.groupCredit[index] : ""
+                                color: theme.gold; font.pixelSize: theme.fontTableHeader; wrapMode: Text.WordWrap; elide: Text.ElideNone }
                         }
                     }
                     Btn {
@@ -3754,7 +3888,7 @@ Item {
                         Layout.alignment: Qt.AlignRight
                         text: "＋  مجموعة"
                         enabled: groupModel.count < 50
-                        onClicked: { groupModel.append({ weight: "", rate: "", description: "" }); newInvoiceDialog.recompute() }
+                        onClicked: { groupModel.append({ weight: "", rate: "", description: "", karatId: 0, karatValue: 0 }); newInvoiceDialog.recompute() }
                     }
                     Txt { Layout.fillWidth: true; text: "ملاحظات" }
                     Field { id: notesField2; objectName: "invoiceNotesField"; Layout.fillWidth: true }
@@ -3774,6 +3908,8 @@ Item {
                     layoutDirection: Qt.RightToLeft
                     spacing: 14
                     Txt { objectName: "invoiceTotalWeight"; text: "وزن المورد: " + newInvoiceDialog.preview.weightText; font.bold: true }
+                    Txt { objectName: "invoiceTotalCredit"; visible: newInvoiceDialog.preview.creditText !== ""
+                          text: "المضاف لحسابنا: " + newInvoiceDialog.preview.creditText; color: theme.gold; font.bold: true }
                     Txt { objectName: "invoiceTotalMaking"; text: "إجمالي المصنعيات: " + newInvoiceDialog.preview.makingText
                           color: theme.gold; font.bold: true }
                     Item { Layout.fillWidth: true }
@@ -4142,6 +4278,8 @@ Item {
                                                value: modelData.categoryResolved ? modelData.categoryText : "غير محددة"
                                                valueColor: modelData.categoryResolved ? theme.textPrimary : theme.amber }
                                         Pair { label: "وزن المورد (جرام)"; value: modelData.weightText; strong: true }
+                                        Pair { visible: modelData.karatDiffers === true; label: "عيار المجموعة"; value: "عيار " + modelData.karat; strong: true; valueColor: theme.gold }
+                                        Pair { visible: modelData.karatDiffers === true; label: "المضاف لحسابنا (جرام)"; value: modelData.creditedText; strong: true; valueColor: theme.gold }
                                         Pair { visible: modelData.adjusted === true; label: "تعديل الوزن (جرام)"; value: modelData.adjustmentText; strong: true; valueColor: theme.amber }
                                         Pair { visible: modelData.adjusted === true; label: "الوزن بعد التعديل (جرام)"; value: modelData.effectiveText; strong: true }
                                         Pair { label: "مصنعية الجرام"; value: page.ltr(modelData.rateText); strong: true
@@ -4205,7 +4343,7 @@ Item {
                                 Txt { objectName: "pieceInheritedRate"; elide: Text.ElideNone
                                       text: "مصنعية الجرام: " + page.ltr(intakeDialog.groupValue("rateText", "—")) }
                                 Txt { objectName: "pieceInheritedKarat"; elide: Text.ElideNone
-                                      text: "عيار " + (intakeDialog.ready ? intakeDialog.inv.karat : "") }
+                                      text: "عيار " + intakeDialog.groupValue("karat", intakeDialog.ready ? intakeDialog.inv.karat : "") }
                                 Item { Layout.fillWidth: true }
                             }
                         }

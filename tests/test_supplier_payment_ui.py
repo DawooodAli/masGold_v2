@@ -5,7 +5,7 @@ from unittest.mock import patch
 from uuid import uuid4
 import unittest
 
-from PySide6.QtCore import QMetaObject, QObject, QPointF, Qt
+from PySide6.QtCore import QDate, QMetaObject, QObject, QPointF, Qt
 from PySide6.QtTest import QTest
 
 from services.correction_service import CorrectionService
@@ -360,6 +360,158 @@ class SupplierPaymentPageTests(harness.InvoicePageTests):
                 self.item("payMakingDialog").close()
                 self.closed("payMakingDialog")
                 self.item("payAmountField").setProperty("text", "")
+
+
+    # ------------------------------------------------------------ Task 16: payMakingDialog keyboard flow (same flow as tripSupplierPayDialog)
+    def focus_name(self):
+        item = self.root.activeFocusItem()
+        return "none" if item is None else (item.objectName() or item.metaObject().className())
+
+    def record_pay(self):
+        """Wrap the real slot: every call the dialog makes is recorded and still reaches the real view model and service."""
+        calls, original = [], self.svm.payMaking
+
+        def recorder(*arguments):
+            calls.append(arguments)
+            return original(*arguments)
+
+        self.svm.payMaking = recorder
+        return calls
+
+    def prepare_bank_payment(self, amount="1000"):
+        """Open the dialog and fill everything but the last Return: the amount is typed with no click (the dialog focused it), the bank is chosen."""
+        self.open_supplier()
+        self.open_dialog()
+        self.assertEqual(self.focus_name(), "payAmountField")
+        self.type_text(amount)
+        QTest.qWait(60)
+        self.pick("payBankCombo", 1)
+
+    def walk_to_notes(self, reference="REF-77", notes="ملاحظة"):
+        """Return walks the typed fields in their visual order: amount, date, reference, notes. Nothing is submitted on the way."""
+        self.click("payAmountField")
+        for field, text in (("payDateField", ""), ("payReferenceField", reference), ("payNotesField", notes)):
+            QTest.keyClick(self.root, Qt.Key_Return)
+            self.assertEqual(self.focus_name(), field)
+            self.assertEqual(self.db.payments, {})
+            if text:
+                self.type_text(text)
+        QTest.qWait(60)
+
+    def test_the_payment_dialog_focuses_the_amount_and_escape_closes_it_at_once(self):
+        self.open_supplier()
+        dialog = self.item("payMakingDialog")
+        QMetaObject.invokeMethod(dialog, "openFor")                                  # no wait: focus and Escape work at once
+        self.assertEqual(self.focus_name(), "payAmountField")
+        QTest.keyClick(self.root, Qt.Key_Escape)
+        self.closed("payMakingDialog")
+        self.assertEqual(self.db.payments, {})
+        self.open_dialog()                                                           # a fresh opening starts clean, focused again
+        self.assertEqual(self.item("payAmountField").property("text"), "")
+        self.assertEqual(self.focus_name(), "payAmountField")
+        self.assertFalse(self.item("confirmPayMakingButton").property("enabled"))
+
+    def test_return_walks_the_fields_and_only_the_last_one_submits_exactly_the_same_arguments(self):
+        calls = self.record_pay()
+        self.prepare_bank_payment()
+        self.walk_to_notes()
+        self.assertEqual(calls, [])
+        QTest.keyClick(self.root, Qt.Key_Return)                                     # Return in the notes field
+        self.wait_until(lambda: len(self.db.payments) == 1, "payment posted")
+        self.closed("payMakingDialog")
+        self.wait_idle()
+        self.assertEqual(len(calls), 1)
+        supplier_id, method, source_id, same_party, amount, paid_on, reference, notes, request_key = calls[0]
+        self.assertEqual((supplier_id, method, source_id, same_party, amount, reference, notes),
+                         (str(self.supplier), "BANK", "5", False, "1000", "REF-77", "ملاحظة"))
+        self.assertEqual(paid_on, QDate.currentDate().toString("yyyy-MM-dd"))
+        self.assertTrue(request_key)
+        self.assertEqual([(m["account_id"], m["amount_delta"]) for m in self.db.bank_moves], [(5, D("-1000.00"))])
+        self.assertEqual(self.warnings, [])
+
+    def test_keypad_enter_in_the_last_field_submits_once_too(self):
+        calls = self.record_pay()
+        self.prepare_bank_payment()
+        self.walk_to_notes()
+        QTest.keyClick(self.root, Qt.Key_Enter, Qt.KeypadModifier)
+        self.wait_until(lambda: len(self.db.payments) == 1, "payment posted")
+        self.closed("payMakingDialog")
+        self.wait_idle()
+        self.assertEqual(len(calls), 1)
+
+    def test_enter_never_submits_while_a_required_input_is_missing(self):
+        calls = self.record_pay()
+        self.open_supplier()
+        self.open_dialog()
+        self.type_text("1000")                                                       # amount only: no account chosen
+        QTest.qWait(60)
+        self.assertFalse(self.item("confirmPayMakingButton").property("enabled"))
+        self.walk_to_notes()
+        QTest.keyClick(self.root, Qt.Key_Return)
+        QTest.qWait(300)
+        self.assertEqual((calls, self.db.payments), ([], {}))
+        self.assertTrue(self.item("payMakingDialog").property("visible"))
+        self.item("payAmountField").setProperty("text", "")                          # an account but no amount
+        self.pick("payBankCombo", 1)
+        self.click("payNotesField")
+        QTest.keyClick(self.root, Qt.Key_Return)
+        QTest.qWait(300)
+        self.assertEqual((calls, self.db.payments), ([], {}))
+        self.assertTrue(self.item("payMakingDialog").property("visible"))
+
+    def test_a_repeated_key_or_button_plus_key_posts_one_payment(self):
+        for how in ("two Returns", "button then Return"):
+            with self.subTest(how=how):
+                self.db.payments.clear()
+                self.db.bank_moves.clear()
+                calls = self.record_pay()
+                self.prepare_bank_payment()
+                self.walk_to_notes()
+                if how == "two Returns":
+                    QTest.keyClick(self.root, Qt.Key_Return)
+                    QTest.keyClick(self.root, Qt.Key_Return)
+                else:
+                    self.click("confirmPayMakingButton")
+                    QTest.keyClick(self.root, Qt.Key_Return)
+                self.wait_until(lambda: len(self.db.payments) >= 1, "payment posted")
+                self.closed("payMakingDialog")
+                self.wait_idle()
+                QTest.qWait(200)
+                self.assertEqual((len(calls), len(self.db.payments), len(self.db.bank_moves)), (1, 1, 1))
+
+    def test_enter_is_refused_while_a_payment_is_running(self):
+        calls = self.record_pay()
+        self.prepare_bank_payment()
+        self.walk_to_notes()
+        self.svm._busy.add("pay")
+        self.svm.changed.emit()
+        QTest.qWait(60)
+        self.assertFalse(self.item("confirmPayMakingButton").property("enabled"))
+        QTest.keyClick(self.root, Qt.Key_Return)
+        QTest.qWait(300)
+        self.assertEqual((calls, self.db.payments), ([], {}))
+        self.assertTrue(self.item("payMakingDialog").property("visible"))
+        self.svm._busy.discard("pay")
+        self.svm.changed.emit()
+
+    def test_the_payment_dialog_keeps_its_fit_and_focus_at_every_target_size(self):
+        self.open_supplier()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                self.open_dialog()
+                self.assertEqual(self.focus_name(), "payAmountField")
+                for name in ("payMethodBank", "payBankCombo", "payAmountField", "payDateField", "payReferenceField", "payNotesField",
+                             "confirmPayMakingButton", "cancelPayMakingButton"):
+                    self.assert_inside_window(self.item(name))
+                dialog = self.item("payMakingDialog")                                       # a Popup is not an Item: its own rectangle
+                self.assertTrue(dialog.property("x") >= 0 and dialog.property("y") >= 0
+                                and dialog.property("x") + dialog.property("width") <= width
+                                and dialog.property("y") + dialog.property("height") <= height, (width, height))
+                QTest.keyClick(self.root, Qt.Key_Escape)
+                self.closed("payMakingDialog")
 
 
 # The base class carries the invoice-page tests: only this module's own tests are collected here.

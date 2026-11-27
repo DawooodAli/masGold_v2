@@ -1113,6 +1113,14 @@ Item {
             page.vm.refresh()
             open()
         }
+        // The one confirmation path, shared by the button and Enter in the last field. The button's own enabled state is the gate (a supplier chosen,
+        // an amount, a date, nothing running); a popup that is not fully open (it is fading out after a success) never submits.
+        function submit() {
+            if (!opened || !confirmCustodyPayButton.enabled) return
+            page.vm.paySupplier(tripId, supplierChoices[paySupplierCombo.currentIndex].id, payAmountField.text,
+                                payDateField.text, payReferenceField.text, payNotesField.text, requestKey)
+        }
+        onAboutToShow: payAmountField.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(560, page.width - 24)
@@ -1153,18 +1161,22 @@ Item {
                         ColumnLayout {
                             Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
                             Txt { Layout.fillWidth: true; text: "المبلغ (ج) *" }
-                            Field { id: payAmountField; objectName: "custodyPayAmountField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                            Field { id: payAmountField; objectName: "custodyPayAmountField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                    onAccepted: payDateField.forceActiveFocus() }
                         }
                         ColumnLayout {
                             Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
-                            Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
-                            Field { id: payDateField; objectName: "custodyPayDateField"; Layout.fillWidth: true }
+                            Txt { Layout.fillWidth: true; text: "تاريخ الدفع (yyyy-MM-dd) *" }
+                            Field { id: payDateField; objectName: "custodyPayDateField"; Layout.fillWidth: true
+                                    onAccepted: payReferenceField.forceActiveFocus() }
                         }
                     }
                     Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
-                    Field { id: payReferenceField; objectName: "custodyPayReferenceField"; Layout.fillWidth: true }
+                    Field { id: payReferenceField; objectName: "custodyPayReferenceField"; Layout.fillWidth: true
+                            onAccepted: payNotesField.forceActiveFocus() }
                     Txt { Layout.fillWidth: true; text: "ملاحظات" }
-                    Field { id: payNotesField; objectName: "custodyPayNotesField"; Layout.fillWidth: true }
+                    Field { id: payNotesField; objectName: "custodyPayNotesField"; Layout.fillWidth: true
+                            onAccepted: payDialog.submit() }                                                    // Return and keypad Enter
                 }
             }
             Txt { objectName: "custodyPayEntryError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
@@ -1174,13 +1186,13 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
                 Btn {
+                    id: confirmCustodyPayButton
                     objectName: "confirmCustodyPayButton"
                     text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل الدفعة"
                     primary: true
                     enabled: paySupplierCombo.currentIndex > 0 && payAmountField.text.trim().length > 0 && payDateField.text.trim().length > 0
                              && !!page.vm && !page.vm.writing
-                    onClicked: page.vm.paySupplier(payDialog.tripId, payDialog.supplierChoices[paySupplierCombo.currentIndex].id, payAmountField.text,
-                                                   payDateField.text, payReferenceField.text, payNotesField.text, payDialog.requestKey)
+                    onClicked: payDialog.submit()
                 }
                 Btn { objectName: "cancelCustodyPayButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: payDialog.close() }
@@ -1494,6 +1506,14 @@ Item {
             page.vm.refresh()
             open()
         }
+        // The supplier comes first. The one confirmation path, shared by the button and Enter in the last text field: the button's own enabled state is
+        // the gate (a supplier and a source chosen, weight, date, not short, no preview error, nothing running); a popup that is not fully open never submits.
+        function submit() {
+            if (!opened || !confirmCustodyGoldSettleButton.enabled) return
+            page.vm.settleGold(tripId, supplierId, source.karatId, source.designation, goldSettleWeight.text, goldSettleDate.text,
+                               goldSettleReference.text, goldSettleNotes.text, requestKey)
+        }
+        onAboutToShow: goldSettleSupplier.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(560, page.width - 24)
@@ -1528,12 +1548,14 @@ Item {
                         ColumnLayout {
                             Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
                             Txt { Layout.fillWidth: true; text: "الوزن المُسلَّم الفعلي (جرام) *" }
-                            Field { id: goldSettleWeight; objectName: "custodyGoldSettleWeightField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+                            Field { id: goldSettleWeight; objectName: "custodyGoldSettleWeightField"; Layout.fillWidth: true; inputMethodHints: Qt.ImhFormattedNumbersOnly
+                                    onAccepted: goldSettleDate.forceActiveFocus() }
                         }
                         ColumnLayout {
                             Layout.preferredWidth: 1; Layout.fillWidth: true; spacing: 2
                             Txt { Layout.fillWidth: true; text: "التاريخ (yyyy-MM-dd) *" }
-                            Field { id: goldSettleDate; objectName: "custodyGoldSettleDateField"; Layout.fillWidth: true }
+                            Field { id: goldSettleDate; objectName: "custodyGoldSettleDateField"; Layout.fillWidth: true
+                                    onAccepted: goldSettleReference.forceActiveFocus() }
                         }
                     }
                     Rectangle {
@@ -1572,9 +1594,11 @@ Item {
                         }
                     }
                     Txt { Layout.fillWidth: true; text: "المرجع (اختياري)" }
-                    Field { id: goldSettleReference; objectName: "custodyGoldSettleReferenceField"; Layout.fillWidth: true }
+                    Field { id: goldSettleReference; objectName: "custodyGoldSettleReferenceField"; Layout.fillWidth: true
+                            onAccepted: goldSettleNotes.forceActiveFocus() }
                     Txt { Layout.fillWidth: true; text: "ملاحظات" }
-                    Field { id: goldSettleNotes; objectName: "custodyGoldSettleNotesField"; Layout.fillWidth: true }
+                    Field { id: goldSettleNotes; objectName: "custodyGoldSettleNotesField"; Layout.fillWidth: true
+                            onAccepted: goldSettleDialog.submit() }                                             // Return and keypad Enter
                 }
             }
             Txt { objectName: "custodyGoldSettleError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
@@ -1584,15 +1608,14 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
                 Btn {
+                    id: confirmCustodyGoldSettleButton
                     objectName: "confirmCustodyGoldSettleButton"
                     text: !!page.vm && page.vm.writing ? "جارٍ الحفظ…" : "تسجيل التسوية"
                     primary: true
                     enabled: goldSettleDialog.supplierId !== "" && !!goldSettleDialog.source.key && goldSettleWeight.text.trim().length > 0
                              && goldSettleDate.text.trim().length > 0 && !!page.vm && !page.vm.writing
                              && goldSettleDialog.preview.short !== true && !goldSettleDialog.preview.error
-                    onClicked: page.vm.settleGold(goldSettleDialog.tripId, goldSettleDialog.supplierId, goldSettleDialog.source.karatId,
-                                                  goldSettleDialog.source.designation, goldSettleWeight.text, goldSettleDate.text,
-                                                  goldSettleReference.text, goldSettleNotes.text, goldSettleDialog.requestKey)
+                    onClicked: goldSettleDialog.submit()
                 }
                 Btn { objectName: "cancelCustodyGoldSettleButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: goldSettleDialog.close() }
@@ -3209,6 +3232,14 @@ Item {
             if (page.vm) page.vm.clearMessage()
             open()
         }
+        // The one confirmation path, shared by the button and Return / Enter in the reason field: it refuses a blank reason, an operation
+        // already running and a popup that is not fully open. The mode keeps choosing between the two existing operations.
+        function submit() {
+            if (!opened || !confirmTripReasonButton.enabled) return
+            if (mode === "REVERSE") page.vm.reverseEntry(targetId, reasonField.text)
+            else page.vm.reopenTrip(targetId, reasonField.text)
+        }
+        onAboutToShow: reasonField.forceActiveFocus()      // typing and Escape work at once, not after a click inside the popup
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(480, page.width - 24)
@@ -3228,7 +3259,8 @@ Item {
             Txt { objectName: "tripReasonNote"; Layout.fillWidth: true; visible: reasonDialog.mode === "REVERSE" && reasonDialog.targetNote !== ""
                   text: reasonDialog.targetNote; color: theme.amber; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             Txt { Layout.fillWidth: true; text: "السبب *" }
-            Field { id: reasonField; objectName: "tripReasonField"; Layout.fillWidth: true }
+            Field { id: reasonField; objectName: "tripReasonField"; Layout.fillWidth: true
+                    onAccepted: reasonDialog.submit() }                                                         // Return and keypad Enter
             Txt { objectName: "tripReasonError"; Layout.fillWidth: true; visible: !!page.vm && page.vm.errorMessage !== ""
                   text: page.vm ? page.vm.errorMessage : ""; color: theme.red; wrapMode: Text.WordWrap; elide: Text.ElideNone }
             RowLayout {
@@ -3236,13 +3268,13 @@ Item {
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
                 Btn {
+                    id: confirmTripReasonButton
                     objectName: "confirmTripReasonButton"
                     text: !!page.vm && page.vm.writing ? "جارٍ التنفيذ…" : (reasonDialog.mode === "REVERSE" ? "عكس الحركة" : "إعادة الفتح")
                     accent: reasonDialog.mode === "REVERSE" ? theme.red : theme.amber
                     primary: true
                     enabled: reasonField.text.trim().length > 0 && !!page.vm && !page.vm.writing
-                    onClicked: reasonDialog.mode === "REVERSE" ? page.vm.reverseEntry(reasonDialog.targetId, reasonField.text)
-                                                                : page.vm.reopenTrip(reasonDialog.targetId, reasonField.text)
+                    onClicked: reasonDialog.submit()
                 }
                 Btn { objectName: "cancelTripReasonButton"; text: "إلغاء"; accent: theme.textSecondary
                       enabled: !!page.vm && !page.vm.writing; onClicked: reasonDialog.close() }

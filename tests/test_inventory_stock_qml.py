@@ -3,7 +3,7 @@
 events at 1440×900 / 1280×800 / 1080×680. The database is blocked; services are in-memory doubles."""
 from decimal import Decimal as D
 
-from PySide6.QtCore import Q_ARG, QCoreApplication, QEvent, QMetaObject, QObject, Qt
+from PySide6.QtCore import Q_ARG, QCoreApplication, QEvent, QMetaObject, QObject, QPointF, Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtTest import QTest
 
@@ -194,6 +194,177 @@ class InventoryStockPageTests(harness.InvoicePageTests):
         self.click("inventoryResetFilters")
         self.wait_until(lambda: calls[-1] == {"search": "", "karat_id": None, "item_type_id": None, "scrap_only": False} and not inventory.hasHistoryPiece, "reset")
         self.assertEqual(self.item("inventoryKaratFilter").property("currentIndex"), 0)
+        self.assertEqual(self.warnings, [])
+
+    # ------------------------------------------------------------ Task 05: Inventory controls against the real PAGE rectangle
+    # `assert_inside_window` compares with the whole window, so a control that runs under the right-hand sidebar still passes. These helpers
+    # compare with the rectangle of the Inventory page item itself and name every control that leaves it. Nothing here is hard-coded: the
+    # page rectangle and the reserved regions (the sidebar) are read from the live item tree at each window size.
+    BOUNDARY_CONTROLS = {"Button", "ComboBox", "TextField", "TextArea", "CheckBox", "Switch", "RadioButton", "SpinBox", "Label"}
+    BOUNDARY_CONTAINERS = {"QQuickRowLayout", "QQuickColumnLayout", "QQuickRectangle", "QQuickFlow"}
+
+    @staticmethod
+    def type_name(item):
+        return item.metaObject().className().split("_QML")[0]
+
+    def scene_rect(self, item):
+        p = item.mapToScene(QPointF(0, 0))
+        return (round(p.x(), 3), round(p.y(), 3), round(p.x() + item.width(), 3), round(p.y() + item.height(), 3))
+
+    def reserved_regions(self, page):
+        """Every visible, non-empty sibling of the page or of one of its ancestors that does not intersect the page: the sidebar and anything
+        else the application keeps for itself. Found by walking the live item tree, not by a fixed width."""
+        regions, node = [], page
+        while node.parentItem() is not None:
+            for sibling in self.children(node.parentItem()):
+                if sibling is node or not sibling.property("visible") or sibling.width() <= 0 or sibling.height() <= 0:
+                    continue
+                rect = self.scene_rect(sibling)
+                prect = self.scene_rect(page)
+                if rect[0] < prect[2] and prect[0] < rect[2] and rect[1] < prect[3] and prect[1] < rect[3]:
+                    continue                                   # it overlaps the page (a background layer), so it is not a reserved side region
+                regions.append((self.type_name(sibling), sibling.objectName(), rect))
+            node = node.parentItem()
+        return regions
+
+    def filter_bar_items(self, page):
+        """The visible controls and containers of the Inventory page above the list: header, settings row, search and filter cards. The list
+        container (the one holding the list view that owns `inventoryListWheel`) is excluded because the list scrolls inside its own viewport."""
+        wheel = self.item("inventoryListWheel").parent()        # the WheelHandler is not an Item: its parent is the list view
+        self.assertTrue(hasattr(wheel, "parentItem"), "the Inventory list view was not found")
+        columns = [c for c in self.children(page) if self.type_name(c) == "QQuickColumnLayout"]
+        self.assertEqual(len(columns), 1, "the Inventory page's top-level column was not found")
+        found = []
+
+        def holds_list(item):
+            node = wheel
+            while node is not None:
+                if node is item:
+                    return True
+                node = node.parentItem()
+            return False
+
+        def walk(item, depth):
+            if not item.property("visible"):
+                return
+            kind = self.type_name(item)
+            if kind in self.BOUNDARY_CONTROLS or kind in self.BOUNDARY_CONTAINERS:
+                found.append(item)
+            if kind in self.BOUNDARY_CONTROLS:
+                return                                         # a control's own parts (its text, popup, indicator) are not inspected
+            for child in self.children(item):
+                if not holds_list(child):
+                    walk(child, depth + 1)
+        for child in self.children(columns[0]):
+            if not holds_list(child):
+                walk(child, 1)
+        return found
+
+    def measure_page_boundary(self):
+        """Wait until the geometry of the page and of every inspected item is unchanged between two samples; return (page, items)."""
+        previous = None
+        for _ in range(60):
+            page = self.item("inventoryPage")
+            items = self.filter_bar_items(page)
+            snapshot = (self.scene_rect(page), [self.scene_rect(i) for i in items])
+            if snapshot == previous:
+                break
+            previous = snapshot
+            QTest.qWait(60)
+        else:
+            self.fail(f"the Inventory geometry never became stable at {self.root.width()}x{self.root.height()}")
+        return page, items
+
+    def boundary_findings(self, page, items):
+        """One line per control or container that leaves the page rectangle (or is visible without a usable geometry)."""
+        window = f"window {self.root.width()}x{self.root.height()}"
+        prect = self.scene_rect(page)
+        reserved = self.reserved_regions(page)
+        findings = []
+        for item in items:
+            label = f"{self.type_name(item)}:{item.objectName() or item.property('text') or '(unnamed)'}"
+            rect = self.scene_rect(item)
+            if item.width() <= 0 or item.height() <= 0:
+                findings.append(f"{label}: visible but has no usable geometry {rect}; page {prect}; {window}")
+                continue
+            over = {"left": prect[0] - rect[0], "top": prect[1] - rect[1], "right": rect[2] - prect[2], "bottom": rect[3] - prect[3]}
+            hits = ", ".join(f"{side} by {amount:g}px" for side, amount in over.items() if amount > 0)
+            if hits:
+                under = [f"{kind}:{name or '(unnamed)'} {r}" for kind, name, r in reserved if rect[0] < r[2] and r[0] < rect[2] and rect[1] < r[3] and r[1] < rect[3]]
+                findings.append(f"{label}: geometry {rect} leaves the page rectangle {prect} {hits}"
+                                + (f", overlapping reserved region {', '.join(under)}" if under else "") + f"; {window}")
+        return findings
+
+    def test_inventory_filter_bar_stays_inside_the_page_area_at_every_size(self):
+        """Task 05, measurement only: every visible Inventory control above the list, and its containers, must lie inside the Inventory page
+        rectangle (the window minus the sidebar) at all three sizes. Known baseline defect: the karat / item-type row overflows at the narrow
+        sizes; the failure text names each control, its geometry, the page rectangle, the direction and amount, and the window size."""
+        self.page(INVENTORY)
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                page, items = self.measure_page_boundary()
+                names = {i.objectName() for i in items}
+                for required in ("inventoryKaratFilter", "inventoryItemTypeFilter", "inventoryResetFilters", "inventoryScrapOnly"):
+                    self.assertIn(required, names, f"{required} was not found among the inspected controls at {width}x{height}")
+                prect = self.scene_rect(page)
+                self.assertGreater(prect[2] - prect[0], 0, "the Inventory page has no width")
+                self.assertLessEqual(prect[2], width, "the page rectangle is wider than the window")
+                reserved = self.reserved_regions(page)
+                self.assertTrue(reserved, f"no reserved region (sidebar) was found beside the page at {width}x{height}")
+                for kind, name, rect in reserved:
+                    self.assertFalse(rect[0] < prect[2] and prect[0] < rect[2] and rect[1] < prect[3] and prect[1] < rect[3],
+                                     f"the page rectangle {prect} overlaps reserved region {kind}:{name} {rect}")
+                findings = self.boundary_findings(page, items)
+                self.assertEqual(findings, [], f"{len(findings)} Inventory control(s) leave the page area at {width}x{height}:\n  " + "\n  ".join(findings))
+
+    def test_inventory_filter_card_wraps_without_overlapping_the_list_and_every_filter_works_by_click(self):
+        """Task 06: the date / barcode / action Flow wraps at the narrow sizes; the card grows above the list (no overlap), each label stays beside
+        its control, and the date, scrap-only and reset controls still work by a real click at every size."""
+        inventory = self.controller.operational_viewmodels["inventoryVM"]
+        scrap_calls = []
+        inventory.setScrapOnly = lambda value: scrap_calls.append(bool(value))
+        self.page(INVENTORY)
+        lines = {}
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                page, items = self.measure_page_boundary()
+                reset = self.item("inventoryResetFilters")
+                card = reset
+                while self.type_name(card) != "QQuickRectangle":
+                    card = card.parentItem()
+                list_view = self.item("inventoryListWheel").parent().parentItem()          # WheelHandler -> content item -> ListView
+                self.assertLessEqual(self.scene_rect(card)[3], self.scene_rect(list_view)[1], f"the filter card overlaps the list at {width}x{height}")
+                by_text = {i.property("text"): i for i in items if self.type_name(i) in ("Label", "Button")}
+                date_field = next(i for i in items if self.type_name(i) == "TextField" and i.property("placeholderText") == "YYYY-MM-DD")      # it has an id, no objectName
+                for label, control in (("تاريخ إدخال القطعة", date_field), ("حالة الباركود", None)):
+                    anchor = by_text[label]
+                    rect = self.scene_rect(anchor)
+                    beside = control if control is not None else next(i for i in items if self.type_name(i) == "ComboBox" and self.scene_rect(i)[1] < rect[3] and self.scene_rect(i)[3] > rect[1]
+                                                                       and self.scene_rect(i)[2] <= rect[0] + 0.001)
+                    crect = self.scene_rect(beside)
+                    self.assertLessEqual(crect[2], rect[0] + 0.001, f"the control of «{label}» is not to the left of its label at {width}x{height}")
+                    self.assertTrue(crect[1] < rect[3] and crect[3] > rect[1], f"«{label}» is not on the same line as its control at {width}x{height}")
+                centres = {round((self.scene_rect(i)[1] + self.scene_rect(i)[3]) / 2) for i in (reset, self.item("inventoryScrapOnly"), by_text["اليوم"], by_text["تاريخ إدخال القطعة"])}
+                lines[(width, height)] = len(centres)
+                for name in ("inventoryResetFilters", "inventoryScrapOnly"):
+                    self.assertTrue(self.item(name).property("enabled"), name)
+                # real clicks reach the right control (nothing overlaps or covers it)
+                self.click(by_text["اليوم"])
+                self.wait_until(lambda: date_field.property("text") != "", "today button")
+                self.click(by_text["كل التواريخ"])
+                self.wait_until(lambda: date_field.property("text") == "", "all-dates button")
+                scrap_calls.clear()
+                self.click("inventoryScrapOnly")
+                self.wait_until(lambda: scrap_calls, "scrap-only click reached the view model")
+                self.click(by_text["اليوم"])
+                self.click(reset)
+                self.wait_until(lambda: date_field.property("text") == "", "reset clears the date")
+        self.assertEqual(lines[(1440, 900)], 1, "the 1440x900 arrangement is still one line")
+        self.assertGreater(lines[(1080, 680)], 1, "the 1080x680 arrangement wraps onto more than one line")
         self.assertEqual(self.warnings, [])
 
     def test_inventory_header_actions_fit(self):

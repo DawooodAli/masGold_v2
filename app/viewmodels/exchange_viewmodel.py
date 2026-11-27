@@ -601,8 +601,11 @@ class ExchangeViewModel(QObject):
                 "needsMoney": not self._result,
                 "moneyLabel": "يستلم المحل" if owes else "يدفع المحل للعميل",
                 "accountLabel": "على حساب العميل" if owes else "للعميل على حسابه",
+                # Owner 2026-11-27: what was entered is accepted; the rest is recorded as waived (the service computes it and refuses nothing entered at all).
                 "remainingText": "التسوية مكتملة" if remaining == 0 else
-                (f"المتبقي {money(remaining)}" if remaining > 0 else f"أكثر من الفرق بـ {money(-remaining)}"),
+                (f"المتبقي {money(remaining)}" if remaining > 0 and entered == 0 else
+                 f"الباقي {money(remaining)} يُسجَّل متنازَلًا عنه" if remaining > 0 else f"أكثر من الفرق بـ {money(-remaining)}"),
+                "waived": money(remaining) if remaining > 0 and entered > 0 else "",
                 "complete": remaining == 0}
 
     @staticmethod

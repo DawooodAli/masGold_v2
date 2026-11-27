@@ -437,9 +437,12 @@ class ReturnViewModel(QObject):
         due = Decimal(p["total_amount"])
         entered = sum((_decimal(l["amount"]) for l in self._legs), Decimal("0.00")) + _decimal(self._account)
         remaining = due - entered
+        # Owner 2026-11-27: what was entered is accepted; the rest is recorded as waived (the service computes it and refuses nothing entered at all).
         return {"due": money(due), "remainingValue": str(remaining), "complete": remaining == 0,
                 "remainingText": "تمت التسوية" if remaining == 0 else
-                (f"المتبقي {money(remaining)}" if remaining > 0 else f"أكثر من المستحق بـ {money(-remaining)}")}
+                (f"المتبقي {money(remaining)}" if remaining > 0 and entered == 0 else
+                 f"الباقي {money(remaining)} يُسجَّل متنازَلًا عنه" if remaining > 0 else f"أكثر من المستحق بـ {money(-remaining)}"),
+                "waived": money(remaining) if remaining > 0 and entered > 0 else ""}
 
     @Property("QVariantList", notify=legsChanged)
     def legs(self):

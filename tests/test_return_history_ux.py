@@ -4,11 +4,13 @@ from datetime import date
 from decimal import Decimal as D
 import unittest
 
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, QMetaObject, QObject, Qt
+from PySide6.QtTest import QTest
 
 from services.invoice_history_service import InvoiceHistoryService
 from tests import test_invoice_history as fixture
 from tests import test_invoice_history_qml as qml_fixture
+from tests.test_customer_picker import inside, result_rows_findings, sample_rows, scene_rect, selected_card_findings, stub_customers
 
 
 def sale(kind="OLD_GOLD_STOCK", value="50000", weight="8"):
@@ -231,6 +233,106 @@ class HistoryUxQmlTests(qml_fixture.InvoiceHistoryPageTests):
             self.shot(f"change-customer-{width}x{height}")
             self.click("historyCustomerCancel")
             self.wait_until(lambda: not dialog.property("visible"), "cancel did not close the dialog")                       # fully gone (no exit transition left over the page)
+        self.assertEqual(self.warnings, [])
+
+    # ------------------------------------------------------------ Task 08: every CustomerPicker host, against its own boundary
+    def picker_host_findings(self, picker_name, boundary, size, label):
+        """With a customer selected, the picker lies inside `boundary` (the page rectangle or the dialog's content rectangle, never the window),
+        its card fits, and the result popup stays inside the window with every line inside its row."""
+        picker = self.item(picker_name)
+        self.assertTrue(picker.property("visible"), f"{label}: {picker_name} is not visible")
+        problems = []
+        prect = scene_rect(picker)
+        if not inside(prect, boundary):
+            problems.append(f"{label}: {picker_name} {prect} leaves its host boundary {boundary}")
+        problems += selected_card_findings(picker, label)
+        QMetaObject.invokeMethod(picker, "open", Qt.DirectConnection)
+        self.wait_until(lambda: picker.findChild(QObject, "customerPickerPopup").property("opened"), f"{label}: popup of {picker_name} did not open")
+        QTest.qWait(150)
+        problems += result_rows_findings(picker, size, label)
+        QMetaObject.invokeMethod(picker, "close", Qt.DirectConnection)
+        self.wait_until(lambda: not picker.findChild(QObject, "customerPickerPopup").property("visible"), f"{label}: popup of {picker_name} did not close")
+        return problems
+
+    def select_in(self, picker_name):
+        picker = self.item(picker_name)
+        rows = sample_rows()
+        vm = stub_customers(picker, rows)
+        self.assertTrue(vm.selectCustomer(str(rows[0]["customer_id"])))
+        QCoreApplication.processEvents()
+        self.assertTrue(picker.property("hasSelection"))
+
+    def page_boundary(self, picker_name):
+        """The rectangle of the page that holds the picker: the page-stack child on the picker's ancestor chain."""
+        node = self.item(picker_name)
+        while node is not None and not (node.parentItem() is not None and node.parentItem().objectName() == "pageStack"):
+            node = node.parentItem()
+        self.assertIsNotNone(node, f"{picker_name} is not inside the page stack")
+        return scene_rect(node)
+
+    def test_ux_customer_picker_hosts_keep_the_pilot_card_and_popup_inside_their_boundary_at_every_size(self):
+        """Task 08: Customers quick picker, merge dialog picker, cash-page picker and invoice-history customer dialog picker."""
+        sizes = ((1440, 900), (1280, 800), (1080, 680))
+        findings = []
+        # 1. Customers page quick picker (page index 3)
+        self.root.setProperty("currentPage", 3)
+        QTest.qWait(300)
+        self.select_in("customersQuickPicker")
+        for width, height in sizes:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(250)
+            findings += self.picker_host_findings("customersQuickPicker", self.page_boundary("customersQuickPicker"), (width, height), f"customers page {width}x{height}")
+        # 2. Merge dialog picker (the dialog's own begin(); the preview binding stays inert while no customer is open)
+        merge = self.item("customerMergeDialog")
+        QMetaObject.invokeMethod(merge, "begin", Qt.DirectConnection)
+        self.wait_until(lambda: merge.property("opened"), "merge dialog did not open")
+        self.select_in("customerMergePicker")
+        for width, height in sizes:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(250)
+            findings += self.picker_host_findings("customerMergePicker", scene_rect(merge.property("contentItem")), (width, height), f"merge dialog {width}x{height}")
+            self.assertTrue(inside(scene_rect(merge.property("contentItem")), (0, 0, width, height)), f"merge dialog content leaves the {width}x{height} window")
+        QMetaObject.invokeMethod(merge, "close", Qt.DirectConnection)
+        self.wait_until(lambda: not merge.property("visible"), "merge dialog did not close")
+        # 3. Financial accounts cash-page picker: the dialog's entry section is shown by its `mode` (no view-model call is made)
+        self.root.setProperty("currentPage", 4)
+        QTest.qWait(300)
+        cash = self.item("customerCashDialog")
+        cash.setProperty("mode", "IN")
+        QMetaObject.invokeMethod(cash, "open", Qt.DirectConnection)
+        self.wait_until(lambda: cash.property("opened"), "cash dialog did not open")
+        self.select_in("customerCashCustomer")
+        for width, height in sizes:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(250)
+            findings += self.picker_host_findings("customerCashCustomer", scene_rect(cash.property("contentItem")), (width, height), f"cash page dialog {width}x{height}")
+            self.assertTrue(inside(scene_rect(cash.property("contentItem")), (0, 0, width, height)), f"cash dialog content leaves the {width}x{height} window")
+        QMetaObject.invokeMethod(cash, "close", Qt.DirectConnection)
+        self.wait_until(lambda: not cash.property("visible"), "cash dialog did not close")
+        # 4. Invoice-history change-customer dialog
+        vm = self.open_history()
+        vm.openInvoice("21")
+        self.wait_until(lambda: vm.detail)
+        vm._detail["can_change_customer"] = True
+        vm.changed.emit()
+        QCoreApplication.processEvents()
+        for width, height in sizes:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QCoreApplication.processEvents()
+            self.click(self.item("historyChangeCustomer"))
+            dialog = self.item("historyCustomerDialog")
+            self.wait_until(lambda: dialog.property("opened"), "history customer dialog did not open")
+            self.select_in("historyCustomerPicker")
+            QTest.qWait(150)
+            findings += self.picker_host_findings("historyCustomerPicker", scene_rect(dialog.property("contentItem")), (width, height), f"history dialog {width}x{height}")
+            self.assertTrue(inside(scene_rect(dialog.property("contentItem")), (0, 0, width, height)), f"history dialog content leaves the {width}x{height} window")
+            self.click("historyCustomerCancel")
+            self.wait_until(lambda: not dialog.property("visible"), "history dialog did not close")
+        self.assertEqual(findings, [], "\n  " + "\n  ".join(findings))
         self.assertEqual(self.warnings, [])
 
     def test_ux_summary_historical_cards_all_sizes(self):

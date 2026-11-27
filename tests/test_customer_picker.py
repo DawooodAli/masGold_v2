@@ -10,8 +10,8 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("QML_DISABLE_DISK_CACHE", "1")
 
-from PySide6.QtCore import QObject, QUrl, QMetaObject, Qt, Q_ARG
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import QObject, QPointF, QUrl, QMetaObject, Qt, Q_ARG
+from PySide6.QtGui import QFontDatabase, QGuiApplication
 from PySide6.QtQml import QQmlComponent, QQmlEngine, qmlRegisterType, qmlTypeId
 from PySide6.QtQuick import QQuickItem
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -196,6 +196,105 @@ class CustomerPickerTests(unittest.TestCase):
         self.assertIn("غير نشط", self.picker.errorMessage)
 
 
+
+# ---------------------------------------------------------------- typography pilot (Task 08): geometry helpers shared with tests/test_return_history_ux.py
+CAIRO = Path(__file__).resolve().parents[1] / "resources" / "fonts" / "Cairo.ttf"
+SELECTED_CARD_HEIGHT = 52          # PickerButton.implicitHeight while a customer is selected
+ROW_FONT = {"رقم العميل": 11, "الهاتف": 11, "تحذيرات نشطة": 11}      # result-row lines by their text prefix
+BALANCE_FONT = 12                                                      # the balance line of the selected card and of a result row
+
+
+def scene_rect(item):
+    p = item.mapToScene(QPointF(0, 0))
+    return (round(p.x(), 3), round(p.y(), 3), round(p.x() + item.width(), 3), round(p.y() + item.height(), 3))
+
+
+def inside(inner, outer):
+    return inner[0] >= outer[0] and inner[1] >= outer[1] and inner[2] <= outer[2] and inner[3] <= outer[3]
+
+
+def text_items(root):
+    """Visible items that carry a non-empty text, found through the item tree (ListView delegates are not QObject children)."""
+    found, pending = [], [root]
+    while pending:
+        item = pending.pop()
+        if not isinstance(item, QQuickItem) or not item.property("visible"):
+            continue
+        text = item.property("text")
+        if isinstance(text, str) and text.strip() and item.width() > 0:
+            found.append(item)
+        pending.extend(item.childItems())
+    return found
+
+
+def px(item):
+    return item.property("font").pixelSize()
+
+
+def stub_customers(picker, rows):
+    """Replace the picker's service by an in-memory double and return its view model."""
+    vm = picker.findChild(CustomerPickerViewModel)
+    vm._service = MagicMock()
+    by_id = {str(r["customer_id"]): r for r in rows}
+    vm._service.get_customer_for_selection.side_effect = lambda identifier, **unused: deepcopy(by_id[identifier])
+    vm._service.search_customers.return_value = result_page(rows)
+    return vm
+
+
+def sample_rows():
+    return [customer(9007199254740993, name="أحمد محمد علي الشرقاوي", balance=Decimal("8500.10"), active_warning_count=2, customer_code="C000143"),
+            customer(18446744073709551615, name="محمود سعيد", balance=Decimal("-3200"), balance_status="SHOP_OWES_CUSTOMER", active_warning_count=0,
+                     customer_code="C000144")]
+
+
+def selected_card_findings(picker, label=""):
+    """Problems of the selected-customer card: heights, the 12 px balance line, and every line inside the button's padded area."""
+    problems = []
+    button = picker.findChild(QObject, "customerPickerOpenButton")
+    content = button.property("contentItem")
+    lines = [c for c in content.childItems() if isinstance(c, QQuickItem) and c.property("visible")]
+    where = f"{label} selected card"
+    if button.height() != SELECTED_CARD_HEIGHT:
+        problems.append(f"{where}: button height {button.height()} != {SELECTED_CARD_HEIGHT}")
+    if len(lines) != 2:
+        return problems + [f"{where}: expected 2 visible lines, found {len(lines)}"]
+    if px(lines[1]) != BALANCE_FONT:
+        problems.append(f"{where}: balance line is {px(lines[1])} px, expected {BALANCE_FONT}")
+    brect = scene_rect(button)
+    inner = (brect[0], brect[1] + button.property("topPadding"), brect[2], brect[3] - button.property("bottomPadding"))
+    if content.property("implicitHeight") > inner[3] - inner[1]:
+        problems.append(f"{where}: content needs {content.property('implicitHeight')} px but the padded button has {inner[3] - inner[1]}")
+    for line in lines:
+        if not inside(scene_rect(line), inner):
+            problems.append(f"{where}: line {line.property('text')[:24]!r} {scene_rect(line)} is outside the padded button {inner}")
+    return problems
+
+
+def result_rows_findings(picker, window, label=""):
+    """Problems of the result popup: inside the window, row lines inside their rows, expected font sizes."""
+    problems = []
+    popup = picker.findChild(QObject, "customerPickerPopup")
+    results = picker.findChild(QObject, "customerPickerResults")
+    box = (popup.property("x"), popup.property("y"), popup.property("x") + popup.property("width"), popup.property("y") + popup.property("height"))
+    if not inside(box, (0, 0, window[0], window[1])):
+        problems.append(f"{label} popup {box} leaves the {window[0]}x{window[1]} window")
+    delegates = [c for c in results.property("contentItem").childItems() if isinstance(c, QQuickItem) and c.property("visible") and c.height() > 0]
+    if not delegates:
+        problems.append(f"{label} popup shows no result row")
+    for index, row in enumerate(delegates):
+        rrect = scene_rect(row)
+        for item in text_items(row):
+            if not inside(scene_rect(item), rrect):
+                problems.append(f"{label} row {index}: {item.property('text')[:24]!r} {scene_rect(item)} is outside its row {rrect}")
+            text = item.property("text").lstrip("\u200f")
+            for prefix, size in ROW_FONT.items():
+                if text.startswith(prefix) and px(item) != size:
+                    problems.append(f"{label} row {index}: {prefix} line is {px(item)} px, expected {size}")
+            if "—" in text and ("العميل" in text or "الحساب" in text) and px(item) != BALANCE_FONT:
+                problems.append(f"{label} row {index}: balance line is {px(item)} px, expected {BALANCE_FONT}")
+    return problems
+
+
 class CustomerPickerQmlTests(unittest.TestCase):
     _application = None
 
@@ -237,6 +336,68 @@ class CustomerPickerQmlTests(unittest.TestCase):
             root.deleteLater()
             engine.deleteLater()
             self._application.processEvents()
+
+    def test_selected_card_error_and_result_rows_fit_with_the_pilot_font_sizes_at_every_size(self):
+        """Task 08: balance line 12 px in a 52 px card, error and result lines 11 px, nothing outside its button / row, popup inside the window.
+        Runs with the bundled Cairo font (as the real application) so the line heights are the real ones."""
+        font_id = QFontDatabase.addApplicationFont(str(CAIRO))
+        self.assertGreaterEqual(font_id, 0, "Cairo.ttf did not load")
+        self.addCleanup(QFontDatabase.removeApplicationFont, font_id)
+        with patch.object(DatabaseConnection, "connect", side_effect=AssertionError("No database access")), \
+                patch("app.viewmodels.customer_picker_viewmodel.CustomerService") as service_factory:
+            service_factory.side_effect = [MagicMock()]
+            engine = QQmlEngine()
+            warnings = []
+            engine.warnings.connect(lambda errors: warnings.extend(error.toString() for error in errors))
+            component = QQmlComponent(engine)
+            component.setData(b'''
+                import QtQuick
+                import QtQuick.Controls
+                import "."
+                ApplicationWindow {
+                    visible: true
+                    width: 1080
+                    height: 680
+                    CustomerPicker { objectName: "pilotPicker"; x: 24; y: 20; width: 430 }
+                }
+            ''', QUrl.fromLocalFile(str(Path(__file__).resolve().parents[1] / "qml" / "CustomerPickerTest.qml")))
+            root = component.create()
+            self.assertIsNotNone(root, [error.toString() for error in component.errors()])
+            try:
+                QTest.qWait(30)
+                picker = root.findChild(QObject, "pilotPicker")
+                rows = sample_rows()
+                vm = stub_customers(picker, rows)
+                # the error line (no selection yet): the service refuses the choice
+                vm._service.get_customer_for_selection.side_effect = ValueError("تعذر اختيار العميل")
+                QMetaObject.invokeMethod(picker, "setCustomerId", Qt.DirectConnection, Q_ARG("QVariant", str(rows[0]["customer_id"])))
+                QTest.qWait(30)
+                self.assertTrue(vm.errorMessage)
+                errors = [i for i in text_items(picker) if i.property("text").lstrip("\u200f") == vm.errorMessage]
+                self.assertEqual(len(errors), 1)
+                self.assertEqual(px(errors[0]), 11)
+                self.assertTrue(inside(scene_rect(errors[0]), scene_rect(picker)), "the error line is outside the picker")
+                vm._service.get_customer_for_selection.side_effect = lambda identifier, **unused: deepcopy({str(r["customer_id"]): r for r in rows}[identifier])
+                QMetaObject.invokeMethod(picker, "setCustomerId", Qt.DirectConnection, Q_ARG("QVariant", str(rows[0]["customer_id"])))
+                for width, height in ((1440, 900), (1280, 800), (1080, 680)):
+                    with self.subTest(size=f"{width}x{height}"):
+                        root.setWidth(width)
+                        root.setHeight(height)
+                        QTest.qWait(120)
+                        label = f"{width}x{height}"
+                        self.assertEqual(selected_card_findings(picker, label), [])
+                        self.assertEqual(picker.height(), SELECTED_CARD_HEIGHT)
+                        QMetaObject.invokeMethod(picker, "open", Qt.DirectConnection)
+                        QTest.qWait(300)
+                        self.assertEqual(result_rows_findings(picker, (width, height), label), [])
+                        QMetaObject.invokeMethod(picker, "close", Qt.DirectConnection)
+                        QTest.qWait(300)
+                self.assertEqual(warnings, [])
+            finally:
+                root.close()
+                root.deleteLater()
+                engine.deleteLater()
+                self._application.processEvents()
 
     def test_two_actual_picker_controls_preserve_selection_on_search_highlight_and_close(self):
         with patch.object(DatabaseConnection, "connect", side_effect=AssertionError("No database access")), \

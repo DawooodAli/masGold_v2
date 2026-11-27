@@ -7,7 +7,7 @@ from decimal import Decimal as D
 from unittest.mock import patch
 import unittest
 
-from PySide6.QtCore import QMetaObject, QObject, QPointF, Qt
+from PySide6.QtCore import Q_ARG, QDate, QMetaObject, QObject, QPointF, Qt
 from PySide6.QtTest import QTest
 
 from app.formatting import money
@@ -1306,6 +1306,159 @@ class MarketTripSupplierPayPageTests(MarketTripMeltingPageTests):
         self.click("confirmCustodyPayButton")
         self.wait_until(lambda: len(self.db.sm_payments) == 1, "payment posted")
         self.closed("tripSupplierPayDialog")
+
+
+    # ------------------------------------------------------------ Task 16: tripSupplierPayDialog keyboard flow (same flow as payMakingDialog)
+    def focus_name(self):
+        item = self.root.activeFocusItem()
+        return "none" if item is None else (item.objectName() or item.metaObject().className())
+
+    def record_pay_calls(self):
+        """Wrap the real slot: every call the dialog makes is recorded and still reaches the real view model and service."""
+        calls, original = [], self.tvm.paySupplier
+
+        def recorder(*arguments):
+            calls.append(arguments)
+            return original(*arguments)
+
+        self.tvm.paySupplier = recorder
+        return calls
+
+    def prepare_custody_payment(self, amount="7000"):
+        """Open the dialog and fill everything but the last Return: the amount is typed with no click (the dialog focused it), the supplier is chosen."""
+        self.cash_trip()
+        self.open_pay()
+        self.assertEqual(self.focus_name(), "custodyPayAmountField")
+        self.type_text(amount)
+        QTest.qWait(60)
+        self.pick("custodyPaySupplierCombo", 1)
+
+    def walk_to_notes(self, reference="REF-88", notes="ملاحظة"):
+        """Return walks the typed fields in their visual order: amount, date, reference, notes. Nothing is submitted on the way."""
+        self.click("custodyPayAmountField")
+        posted = len(self.db.sm_payments)
+        for field, text in (("custodyPayDateField", ""), ("custodyPayReferenceField", reference), ("custodyPayNotesField", notes)):
+            QTest.keyClick(self.root, Qt.Key_Return)
+            self.assertEqual(self.focus_name(), field)
+            self.assertEqual(len(self.db.sm_payments), posted)
+            if text:
+                self.type_text(text)
+        QTest.qWait(60)
+
+    def test_the_custody_payment_dialog_focuses_the_amount_and_escape_closes_it_at_once(self):
+        self.cash_trip()
+        dialog = self.item("tripSupplierPayDialog")
+        self.reveal(self.item("custodyPayButton"))
+        QMetaObject.invokeMethod(dialog, "openFor", Q_ARG("QVariant", self.tvm.detail["id"]))      # no wait: focus and Escape work at once
+        self.assertEqual(self.focus_name(), "custodyPayAmountField")
+        QTest.keyClick(self.root, Qt.Key_Escape)
+        self.closed("tripSupplierPayDialog")
+        self.assertEqual(len(self.db.sm_payments), 0)
+        self.open_pay()                                                              # a fresh opening starts clean, focused again
+        self.assertEqual(self.item("custodyPayAmountField").property("text"), "")
+        self.assertEqual(self.focus_name(), "custodyPayAmountField")
+        self.assertFalse(self.item("confirmCustodyPayButton").property("enabled"))
+
+    def test_return_walks_the_fields_and_only_the_last_one_submits_exactly_the_same_arguments(self):
+        calls = self.record_pay_calls()
+        self.prepare_custody_payment()
+        self.walk_to_notes()
+        self.assertEqual(calls, [])
+        QTest.keyClick(self.root, Qt.Key_Return)                                     # Return in the notes field
+        self.wait_until(lambda: len(self.db.sm_payments) == 1, "payment posted")
+        self.closed("tripSupplierPayDialog")
+        self.wait_idle()
+        self.assertEqual(len(calls), 1)
+        trip_id, supplier_id, amount, paid_on, reference, notes, request_key = calls[0]
+        self.assertEqual((trip_id, amount, reference, notes), (str(self.tvm.detail["id"]), "7000", "REF-88", "ملاحظة"))
+        self.assertEqual(supplier_id, self.tvm.context["suppliers"][0]["id"])
+        self.assertEqual(paid_on, QDate.currentDate().toString("yyyy-MM-dd"))
+        self.assertTrue(request_key)
+        self.assertIn("3,000", self.tvm.detail["cash"]["outstanding"])
+        self.assertEqual(self.warnings, [])
+
+    def test_keypad_enter_in_the_last_field_submits_once_too(self):
+        calls = self.record_pay_calls()
+        self.prepare_custody_payment()
+        self.walk_to_notes()
+        QTest.keyClick(self.root, Qt.Key_Enter, Qt.KeypadModifier)
+        self.wait_until(lambda: len(self.db.sm_payments) == 1, "payment posted")
+        self.closed("tripSupplierPayDialog")
+        self.wait_idle()
+        self.assertEqual(len(calls), 1)
+
+    def test_enter_never_submits_while_a_required_input_is_missing(self):
+        calls = self.record_pay_calls()
+        self.cash_trip()
+        self.open_pay()
+        self.type_text("7000")                                                       # amount only: no supplier chosen
+        QTest.qWait(60)
+        self.assertFalse(self.item("confirmCustodyPayButton").property("enabled"))
+        self.walk_to_notes()
+        QTest.keyClick(self.root, Qt.Key_Return)
+        QTest.qWait(300)
+        self.assertEqual((calls, len(self.db.sm_payments)), ([], 0))
+        self.assertTrue(self.item("tripSupplierPayDialog").property("visible"))
+        self.item("custodyPayAmountField").setProperty("text", "")                   # a supplier but no amount
+        self.pick("custodyPaySupplierCombo", 1)
+        self.click("custodyPayNotesField")
+        QTest.keyClick(self.root, Qt.Key_Return)
+        QTest.qWait(300)
+        self.assertEqual((calls, len(self.db.sm_payments)), ([], 0))
+        self.assertTrue(self.item("tripSupplierPayDialog").property("visible"))
+
+    def test_a_repeated_key_or_button_plus_key_posts_one_payment(self):
+        for how in ("two Returns", "button then Return"):
+            with self.subTest(how=how):
+                calls = self.record_pay_calls()
+                self.prepare_custody_payment(amount="1000")
+                self.walk_to_notes()
+                before = len(self.db.sm_payments)
+                if how == "two Returns":
+                    QTest.keyClick(self.root, Qt.Key_Return)
+                    QTest.keyClick(self.root, Qt.Key_Return)
+                else:
+                    self.click("confirmCustodyPayButton")
+                    QTest.keyClick(self.root, Qt.Key_Return)
+                self.wait_until(lambda: len(self.db.sm_payments) > before, "payment posted")
+                self.closed("tripSupplierPayDialog")
+                self.wait_idle()
+                QTest.qWait(200)
+                self.assertEqual((len(calls), len(self.db.sm_payments) - before), (1, 1))
+
+    def test_enter_is_refused_while_a_payment_is_running(self):
+        calls = self.record_pay_calls()
+        self.prepare_custody_payment()
+        self.walk_to_notes()
+        self.tvm._busy.add("write")
+        self.tvm.changed.emit()
+        QTest.qWait(60)
+        self.assertFalse(self.item("confirmCustodyPayButton").property("enabled"))
+        QTest.keyClick(self.root, Qt.Key_Return)
+        QTest.qWait(300)
+        self.assertEqual((calls, len(self.db.sm_payments)), ([], 0))
+        self.assertTrue(self.item("tripSupplierPayDialog").property("visible"))
+        self.tvm._busy.discard("write")
+        self.tvm.changed.emit()
+
+    def test_the_custody_payment_dialog_keeps_its_fit_and_focus_at_every_target_size(self):
+        self.cash_trip()
+        for width, height in harness.SIZES:
+            with self.subTest(size=(width, height)):
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(150)
+                self.open_pay()
+                self.assertEqual(self.focus_name(), "custodyPayAmountField")
+                for name in ("custodyPaySupplierCombo", "custodyPayAmountField", "custodyPayDateField", "custodyPayReferenceField", "custodyPayNotesField",
+                             "confirmCustodyPayButton", "cancelCustodyPayButton"):
+                    self.assert_inside_window(self.item(name))
+                dialog = self.item("tripSupplierPayDialog")                                  # a Popup is not an Item: its own rectangle
+                self.assertTrue(dialog.property("x") >= 0 and dialog.property("y") >= 0
+                                and dialog.property("x") + dialog.property("width") <= width
+                                and dialog.property("y") + dialog.property("height") <= height, (width, height))
+                QTest.keyClick(self.root, Qt.Key_Escape)
+                self.closed("tripSupplierPayDialog")
 
     def test_the_reversal_from_the_history_explains_the_custody_effect_and_refreshes_everything(self):
         self.cash_trip()

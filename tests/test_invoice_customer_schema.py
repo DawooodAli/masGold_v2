@@ -19,7 +19,7 @@ class MigrationContractTests(unittest.TestCase):
         self.assertIn("MIGRATION_110_REFUSED_missing_109", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(110,")
         self.assertLessEqual(len(re.search(r"VALUES \(110,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 110)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 112)
 
     def test_only_the_ledger_type_is_added_and_nothing_is_rewritten(self):
         self.assertIn("'INVOICE_CUSTOMER_CHANGE'", self.forward)

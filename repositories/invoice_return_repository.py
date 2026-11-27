@@ -124,7 +124,7 @@ class InvoiceReturnRepository(BaseRepository):
                r.source_finalized_at, r.customer_id, r.selection_json, r.selection_hash, r.making_window_open,
                r.requires_approval, r.return_deadline_at, r.gold_amount, r.making_refund, r.total_amount,
                r.valuation_mode, r.refund_basis, r.rounding_adjustment,
-               r.money_paid, r.account_amount, r.price_snapshot_json, r.details_json, r.notes,
+               r.money_paid, r.account_amount, r.waived_amount, r.price_snapshot_json, r.details_json, r.notes,
                r.created_by_user_id, cu.display_name AS created_by_name, r.created_at,
                r.finalized_by_user_id, fu.display_name AS finalized_by_name, r.finalized_at,
                r.canceled_by_user_id, xu.display_name AS canceled_by_name, r.canceled_at
@@ -210,18 +210,18 @@ class InvoiceReturnRepository(BaseRepository):
         return rowcount == 1
 
     def finalize_header(self, *, return_id, making_window_open, gold_amount, making_refund, money_paid, account_amount,
-                        price_snapshot, details, notes, finalized_by_user_id, finalized_at, valuation):
+                        price_snapshot, details, notes, finalized_by_user_id, finalized_at, valuation, waived_amount=0):
         _, rowcount = self._execute(
             """
             UPDATE invoice_returns
             SET return_status = 'FINALIZED', making_window_open = %s, requires_approval = %s, gold_amount = %s,
                 making_refund = %s, valuation_mode = %s, refund_basis = %s, rounding_adjustment = %s,
-                total_amount = %s, money_paid = %s, account_amount = %s,
+                total_amount = %s, money_paid = %s, account_amount = %s, waived_amount = %s,
                 price_snapshot_json = %s, details_json = %s, notes = %s, finalized_by_user_id = %s, finalized_at = %s
             WHERE id = %s AND return_status IN ('DRAFT', 'APPROVED')
             """,
             (bool(making_window_open), not making_window_open, gold_amount, making_refund, valuation["mode"],
-             valuation["basis"], valuation["rounding"], valuation["total"], money_paid, account_amount,
+             valuation["basis"], valuation["rounding"], valuation["total"], money_paid, account_amount, waived_amount,
              _json(price_snapshot), _json(details), notes, finalized_by_user_id, finalized_at, _id(return_id)))
         if rowcount != 1:
             raise RuntimeError("return is no longer finalizable")

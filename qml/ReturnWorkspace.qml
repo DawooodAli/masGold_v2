@@ -351,7 +351,7 @@ Item {
                 Pair { objectName: "returnTotal"; label: "إجمالي المرتجع"; value: returnPage.s.total || ""; strong: true
                        valueColor: theme.accountPayable }
                 Txt { Layout.fillWidth: true; visible: value.length > 0; value: returnPage.s.priceWarning || ""
-                      color: theme.statusWarning; font.pixelSize: theme.fontCaption }
+                      color: theme.statusWarning; font.pixelSize: theme.fontTableHeader }
             }
 
             RowLayout {

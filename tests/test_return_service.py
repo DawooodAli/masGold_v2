@@ -236,9 +236,11 @@ class ReturnRepo:
         assert row["total_amount"] == row["refund_basis"] + row["rounding_adjustment"]
         assert row["rounding_adjustment"] == 0 or row["total_amount"] % 5 == 0
         if row["return_status"] == "FINALIZED":
-            assert row["total_amount"] > 0 and row["money_paid"] + row["account_amount"] == row["total_amount"]
+            # 111 chk_return_amounts_v3: what was paid, put on the account and waived add up to the total
+            assert row["total_amount"] > 0 and row["money_paid"] + row["account_amount"] + row.get("waived_amount", 0) == row["total_amount"]
+            assert row.get("waived_amount", 0) >= 0
         else:
-            assert row["money_paid"] == 0 and row["account_amount"] == 0
+            assert row["money_paid"] == 0 and row["account_amount"] == 0 and row.get("waived_amount", 0) == 0
 
     def insert_header(self, *, status, source_invoice_id, source_finalized_at, customer_id, selection, selection_hash,
                       making_window_open, requires_approval, deadline_at, gold_amount, making_refund, notes,
@@ -285,14 +287,14 @@ class ReturnRepo:
         return True
 
     def finalize_header(self, *, return_id, making_window_open, gold_amount, making_refund, money_paid, account_amount,
-                        price_snapshot, details, notes, finalized_by_user_id, finalized_at, valuation):
+                        price_snapshot, details, notes, finalized_by_user_id, finalized_at, valuation, waived_amount=0):
         row = self._header(return_id)
         assert row["return_status"] in ("DRAFT", "APPROVED")
         row.update(return_status="FINALIZED", making_window_open=making_window_open,
                    requires_approval=not making_window_open, gold_amount=gold_amount, making_refund=making_refund,
                    valuation_mode=valuation["mode"], refund_basis=valuation["basis"],
                    rounding_adjustment=valuation["rounding"], total_amount=valuation["total"],
-                   money_paid=money_paid, account_amount=account_amount,
+                   money_paid=money_paid, account_amount=account_amount, waived_amount=waived_amount,
                    price_snapshot_json=price_snapshot, notes=notes, finalized_at=finalized_at,
                    finalized_by_name="موظف")
         self._check(row)
@@ -765,11 +767,22 @@ class PaymentTests(ReturnTestCase):
         self.assertRefused("ACCOUNT_NEEDS_CUSTOMER", lambda: self.finalize(
             self.draft((("8", None),), invoice="501", account="19050.00")))
 
-    def test_under_and_over_settlement_refused_without_fallback(self):
-        self.assertRefused("SETTLEMENT_INCOMPLETE", lambda: self.finalize(self.draft(payments=(cash("63999.99"),))))
+    def test_over_settlement_and_an_empty_settlement_are_refused_without_fallback(self):
         self.assertRefused("AMOUNT_MISMATCH", lambda: self.finalize(self.draft(payments=(cash("64000.01"),))))
-        self.assertRefused("SETTLEMENT_INCOMPLETE", lambda: self.finalize(self.draft()))
+        self.assertRefused("SETTLEMENT_INCOMPLETE", lambda: self.finalize(self.draft()))                 # nothing entered: never the whole total waived by omission
         self.assertEqual(self.store.ledger, [])                      # never an automatic customer-account remainder
+
+    def test_a_short_payment_is_accepted_and_the_rest_is_waived_never_a_payment_or_an_account_entry(self):
+        # Owner 2026-11-27 ("accept only what was paid"): 63,999.99 paid of 64,000.00, the 0.01 is recorded as waived.
+        preview = self.service.preview(self.draft(payments=(cash("63999.99"),)))
+        self.assertEqual((preview["blocking_problems"], preview["waived_amount"]), ([], "0.01"))
+        result = self.finalize(self.draft(payments=(cash("63999.99"),)))
+        self.assertEqual((result["money_paid"], result["account_amount"], result["waived_amount"], result["total_amount"]),
+                         ("63999.99", "0.00", "0.01", "64000.00"))
+        header = self.store.returns[-1]
+        self.assertEqual((header["money_paid"], header["account_amount"], header["waived_amount"]), (D("63999.99"), D("0.00"), D("0.01")))
+        self.assertEqual([p["amount"] if isinstance(p, dict) else p for p in self.store.return_payments].count(D("0.01")), 0)   # no payment row for the waived part
+        self.assertEqual(self.store.ledger, [])                      # and no customer-account entry for it
 
     def test_cash_may_go_negative(self):
         self.store.cash_balance = D("2000.00")

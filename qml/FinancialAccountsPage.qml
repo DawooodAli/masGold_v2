@@ -176,8 +176,8 @@ Rectangle {
                                 cursorShape: modelData.linked ? Qt.PointingHandCursor : Qt.ArrowCursor
                                 onClicked: page.vm.openRow(modelData.key) }
                 }
-                Txt { anchors.centerIn: parent; visible: list.count === 0 && !!page.vm && !page.vm.busy
-                      text: "لا توجد حركات في هذه الفترة"; color: theme.textMuted }
+                EmptyState { anchors.centerIn: parent; width: Math.min(parent.width - 40, 320); visible: list.count === 0 && !!page.vm && !page.vm.busy
+                             title: "لا توجد حركات في هذه الفترة"; hint: "غيّر الفترة أو نوع الحركة ثم اضغط «عرض»" }
             }
             RowLayout {
                 objectName: table.prefix + "BankTotal"

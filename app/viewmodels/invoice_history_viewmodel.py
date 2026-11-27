@@ -1080,6 +1080,8 @@ class InvoiceHistoryViewModel(QObject):
             account = Decimal(x["account_signed"])
             account_text = ("" if not account else
                             f"حساب العميل: {'على العميل' if account > 0 else 'للعميل'} {money(abs(account))}")
+            waived = Decimal(x.get("waived_amount") or "0")          # migration 111: the part of the difference nobody settled
+            account_text = "  •  ".join(t for t in (account_text, f"متنازَل عنه {money(waived)}" if waived else "") if t)
             delta = Decimal(x["valued_delta_grams"])
             rows.append({
                 "code": x["code"], "time": datetime_text(datetime.fromisoformat(x["occurred_at"])),
@@ -1140,7 +1142,9 @@ class InvoiceHistoryViewModel(QObject):
                          "pieces": pieces, "gold": money(r["gold_amount"]), "making": money(r["making_refund"]),
                          "total": money(r["total_amount"]),
                          "money": (PAID_TEXT + ": " + " • ".join(legs)) if legs else "",
-                         "accountText": f"للعميل على حسابه {money(account)}" if account else "",
+                         "accountText": "  •  ".join(t for t in (f"للعميل على حسابه {money(account)}" if account else "",
+                                                                  f"متنازَل عنه {money(Decimal(r.get('waived_amount') or '0'))}"
+                                                                  if Decimal(r.get("waived_amount") or "0") else "") if t),
                          "dispositionText": "  •  ".join(t for t in dispositions if t),
                          "notes": r.get("notes") or ""})
         return rows

@@ -334,6 +334,7 @@ def exchange_summary(row):
             "direction_text": DIRECTION_TEXT[direction],
             "money_received": _money(row["money_received"]), "money_paid": _money(row["money_paid"]),
             "account_signed": _money(row["account_signed"]),
+            "waived_amount": _money(row.get("waived_amount") or 0),
             "payments": [{"method_code": p["payment_method_code"], "direction": p["direction"],
                           "amount": _money(p["amount"]), "account_name": p.get("bank_account_name")}
                          for p in row["payments"]],
@@ -600,10 +601,14 @@ class ExchangeService:
                                               (held or {}).get(karat_id)))
 
     def _settlement(self, draft, result, customer_id):
-        """(money legs as (PaymentInput, direction, amount), received, paid, account_signed, problems)."""
+        """(money legs as (PaymentInput, direction, amount), received, paid, account_signed, waived, problems).
+
+        Owner 2026-11-27: the exchange accepts what was really settled (money legs + the explicit customer-account part). When that is LESS than the difference,
+        the rest is recorded on the exchange as `waived` (a recorded, attributed difference, never a payment and never an account entry); MORE than the
+        difference is still refused, and nothing entered at all is refused too (an exchange is never saved with the whole difference waived by omission)."""
         problems, legs = [], []
         if result.making_missing:
-            return [], ZERO, ZERO, ZERO, []         # incomplete: nothing to settle (blocked by making)
+            return [], ZERO, ZERO, ZERO, ZERO, []         # incomplete: nothing to settle (blocked by making)
         signed = result.signed_amount
         direction = "IN" if signed > 0 else "OUT"
         account = ZERO
@@ -611,7 +616,7 @@ class ExchangeService:
             # No difference: nothing is owed, so no money leg and no account entry (never a fake payment).
             if draft.payments or not _is_blank_or_zero(draft.account_amount):
                 problems.append(ExchangeError("NO_DIFFERENCE_NO_MONEY", "لا يوجد فرق؛ لا تسجل أي مبلغ."))
-            return [], ZERO, ZERO, ZERO, problems
+            return [], ZERO, ZERO, ZERO, ZERO, problems
         if draft.account_amount not in (None, ""):
             try:
                 account = _decimal(draft.account_amount, "ACCOUNT_INVALID", "اكتب مبلغ الحساب بالأرقام.")
@@ -637,12 +642,21 @@ class ExchangeService:
             problems.append(ExchangeError("ACCOUNT_NEEDS_CUSTOMER",
                                           "لا يمكن استخدام حساب العميل: الفاتورة الأصلية بدون عميل مسجل."))
         money = sum((amount for _, _, amount in legs), ZERO)
-        if not problems and money + account != abs(signed):
-            problems.append(ExchangeError(
-                "AMOUNT_MISMATCH",
-                f"المبالغ المسجلة {money + account:,.2f} ج لا تساوي فرق الاستبدال {abs(signed):,.2f} ج."))
+        waived = ZERO
+        if not problems:
+            settled = money + account
+            if settled > abs(signed):
+                problems.append(ExchangeError(
+                    "AMOUNT_MISMATCH",
+                    f"المبالغ المسجلة {settled:,.2f} ج أكبر من فرق الاستبدال {abs(signed):,.2f} ج."))
+            elif settled == 0:
+                problems.append(ExchangeError(
+                    "SETTLEMENT_REQUIRED",
+                    f"اكتب المبلغ المدفوع فعليًا من فرق الاستبدال {abs(signed):,.2f} ج؛ ما لا يُدفع يُسجَّل متنازَلًا عنه."))
+            else:
+                waived = abs(signed) - settled
         received, paid = (money, ZERO) if signed > 0 else (ZERO, money)
-        return legs, received, paid, account if signed > 0 else -account, problems
+        return legs, received, paid, account if signed > 0 else -account, waived, problems
 
     @staticmethod
     def _making_review(result, ranges):
@@ -846,7 +860,7 @@ class ExchangeService:
             result = calculate(returned, replacements, price_set=price_set,
                                within_window=self._within_window(invoice, now))
             ranges = invoices.category_ranges([p.category_id for p in replacements])
-            legs, received, paid, account, problems = self._settlement(draft, result, invoice.get("customer_id"))
+            legs, received, paid, account, waived, problems = self._settlement(draft, result, invoice.get("customer_id"))
             problems = _making_problems(result) + problems
             if any(p.identified_by == OLD_GOLD_STOCK for p in replacements):
                 stock_rows = invoices.old_gold_balances()
@@ -857,11 +871,12 @@ class ExchangeService:
                     problems.insert(0, self._shortage_error(shortages, karats, held))
             problems += InvoiceService._payment_accounts(
                 invoices, [(payment, None) for payment, _, _ in legs])[3]
-            return invoice, now, price_set, result, ranges, (received, paid, account), problems
-        invoice, now, price_set, result, ranges, (received, paid, account), problems = self._read(read)
+            return invoice, now, price_set, result, ranges, (received, paid, account, waived), problems
+        invoice, now, price_set, result, ranges, (received, paid, account, waived), problems = self._read(read)
         review = self._making_review(result, ranges)
         return {**self._view(result, invoice, now, price_set),
                 "money_received": _money(received), "money_paid": _money(paid), "account_signed": _money(account),
+                "waived_amount": _money(waived),
                 "making_review_required": bool(review), "making_review": review,
                 "blocking_problems": [{"code": p.code, "message": str(p)} for p in problems]}
 
@@ -910,7 +925,7 @@ class ExchangeService:
                                            {k: held_grams(invoices, k) for k, _, _ in shortages})
             result = calculate(returned, replacements, price_set=price_set,
                                within_window=self._within_window(invoice, now))
-            legs, received, paid, account, problems = self._settlement(draft, result, invoice.get("customer_id"))
+            legs, received, paid, account, waived, problems = self._settlement(draft, result, invoice.get("customer_id"))
             problems = _making_problems(result) + problems
             customer = None
             if account != 0:
@@ -942,13 +957,15 @@ class ExchangeService:
                        "replacement_sources": [p.identified_by for p in replacements],
                        "refund_window_hours": MAKING_REFUND_WINDOW_HOURS, "refund_window_open": result.window_open,
                        "payments": [{"method": p.method_code, "direction": d, "amount": a} for p, d, a in legs]}
+            if waived != 0:
+                details["waived_amount"] = waived          # the part of the difference nobody settled (also the waived_amount column)
             if review:
                 details["making_review"] = review
             notes = (draft.notes or "").strip() or None
             lifecycle_id = lifecycle.insert_transaction(
                 source_invoice_id=invoice["invoice_id"], source_finalized_at=invoice["finalized_at"],
                 customer_id=invoice.get("customer_id"), calculation=result, money_received=received,
-                money_paid=paid, account_signed=account, price_snapshot=snapshot, details=details, notes=notes,
+                money_paid=paid, account_signed=account, waived_amount=waived, price_snapshot=snapshot, details=details, notes=notes,
                 performed_by_user_id=actor.user_id, performed_by_employee_id=actor.employee_id, occurred_at=now)
             code = exchange_code(lifecycle_id)
             number, case_ids, returned_line_ids = 0, [], {}

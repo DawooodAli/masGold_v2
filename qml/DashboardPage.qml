@@ -49,6 +49,7 @@ Item {
         id: card
         property string title: ""
         property color accent: theme.gold
+        property color titleColor: theme.gold                           // the card colour is the colour of its title (owner 2026-11-18); a card that needs the employee's attention turns it to the warning colour
         property string badge: ""
         property bool stretch: true                                    // owner 2026-11-18: the cards of one row are level (the uneven heights looked untidy); set false for a card that must keep its content height
         default property alias content: body.data
@@ -74,7 +75,7 @@ Item {
                 anchors.topMargin: 9; anchors.leftMargin: 16; anchors.rightMargin: 18
                 layoutDirection: Qt.RightToLeft
                 spacing: 8
-                Txt { value: card.title; color: theme.gold; font.bold: true; font.pixelSize: theme.fontSection + dashboard.boost }
+                Txt { value: card.title; color: card.titleColor; font.bold: true; font.pixelSize: theme.fontSection + dashboard.boost }
                 Item { Layout.fillWidth: true }
                 Txt { value: card.badge; visible: value.length > 0; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
             }
@@ -100,6 +101,18 @@ Item {
         Item { Layout.fillWidth: true }
         Txt { value: parent.value; color: parent.valueColor; font.bold: parent.strong
               font.pixelSize: parent.strong ? (theme.fontBodyStrong + dashboard.boost) : (theme.fontBody + dashboard.boost) }
+    }
+
+    // A group label between two rows of cards (owner 2026-11-26: the home page reads in order of importance): a muted title and a hairline, spanning the whole grid.
+    component SectionTitle: RowLayout {
+        property string value: ""
+        Layout.fillWidth: true
+        Layout.topMargin: 6
+        visible: !dashboard.goldMode
+        layoutDirection: Qt.RightToLeft
+        spacing: 10
+        Txt { value: parent.value; color: theme.textMuted; font.bold: true; font.pixelSize: theme.fontBody + dashboard.boost }
+        Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: theme.border }
     }
 
     component Empty: Txt {
@@ -516,31 +529,108 @@ Item {
                     Empty { value: "جاري التحميل..."; visible: !dashboard.vm || !dashboard.vm.ready }
                 }
 
-                // --- أسعار العملات (GoldTimo /rates, public market prices: every logged-in user): how many pounds one unit of each chosen currency is worth. Choices live in Settings.
+                // --- سعر شراء الكسر اليوم (billing permission): the average paid per gram today against the latest stored SHOP_BUY of that karat
                 Card {
-                    objectName: "ratesCard"
-                    visible: (!!dashboard.vm && dashboard.vm.currencyRates.offered) && !dashboard.goldMode
-                    title: "أسعار العملات (بالجنيه)"
+                    objectName: "scrapTodayCard"
+                    visible: (dashboard.showRetired && dashboard.sales) && !dashboard.goldMode
+                    title: "سعر شراء الكسر اليوم"
                     accent: theme.priceBuy
                     Repeater {
-                        model: dashboard.vm ? dashboard.vm.currencyRates.rows : []
-                        delegate: Line { required property var modelData
-                                         objectName: "rateRow_" + modelData.code
-                                         label: modelData.name + "  •  " + modelData.code; value: modelData.price; strong: true }
+                        model: dashboard.vm ? dashboard.vm.scrapToday : []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            required property int index
+                            objectName: "scrapToday_" + index
+                            Layout.fillWidth: true
+                            spacing: 0
+                            Line { label: "عيار " + modelData.karat + "  •  " + modelData.grams; value: modelData.average; strong: true
+                                   valueColor: theme.balanceKaratColor(modelData.karat) }
+                            Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                  value: "سعر الشراء الآن " + modelData.price + (modelData.diff ? "  •  الفرق " + modelData.diff : "") + (modelData.discount ? "  •  " + modelData.discount : "")
+                                  color: modelData.over ? theme.amber : theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                        }
                     }
-                    Empty { objectName: "ratesEmpty"; Layout.fillWidth: true; wrapMode: Text.WordWrap
-                            value: dashboard.vm && dashboard.vm.currencyRates.error.length > 0 ? dashboard.vm.currencyRates.error : "لا توجد أسعار عملات الآن"
-                            visible: !!dashboard.vm && dashboard.vm.currencyRates.rows.length === 0 }
-                    Txt { objectName: "ratesUpdated"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
-                          visible: !!dashboard.vm && dashboard.vm.currencyRates.rows.length > 0
-                          value: "GoldTimo • آخر تحديث " + (dashboard.vm ? dashboard.vm.currencyRates.updated : "")
-                                 + (dashboard.vm && dashboard.vm.currencyRates.error.length > 0 ? " • " + dashboard.vm.currencyRates.error : "") }
+                    Empty { objectName: "scrapTodayEmpty"; value: "لم يُشترَ كسر اليوم بعد"
+                            visible: !dashboard.vm || dashboard.vm.scrapToday.length === 0 }
+                }
+
+                // --- section label: follow
+                SectionTitle { objectName: "dashboardSection_follow"; Layout.columnSpan: grid.columns; value: "محتاج متابعة" }
+
+                // --- ديون متأخرة (customers permission): open owed items at least N days old, oldest-first reading of the customer ledger
+                Card {
+                    objectName: "overdueCard"
+                    visible: (!!dashboard.vm && dashboard.vm.canSeeBalances) && !dashboard.goldMode
+                    title: "ديون متأخرة (أكثر من " + (dashboard.vm ? dashboard.vm.overdueDebts.days : 0) + " يوم)"
+                    accent: !!dashboard.vm && dashboard.vm.overdueDebts.count > 0 ? theme.red : theme.textMuted
+                    titleColor: !!dashboard.vm && dashboard.vm.overdueDebts.count > 0 ? theme.statusWarning : theme.gold
+                    badge: dashboard.vm && dashboard.vm.overdueDebts.count > 0 ? String(dashboard.vm.overdueDebts.count) : ""
+                    Line { objectName: "overdueTotal"; label: "إجمالي المتأخر"; value: dashboard.vm ? dashboard.vm.overdueDebts.total : ""; strong: true
+                           valueColor: dashboard.vm && dashboard.vm.overdueDebts.count > 0 ? theme.red : theme.textMuted
+                           visible: !!dashboard.vm && dashboard.vm.overdueDebts.count > 0 }
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.overdueDebts.rows : []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            required property int index
+                            objectName: "overdueRow_" + index
+                            Layout.fillWidth: true
+                            spacing: 0
+                            Line { label: modelData.name; value: modelData.amount; strong: true; valueColor: theme.red }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                layoutDirection: Qt.RightToLeft
+                                spacing: 8
+                                Txt { Layout.fillWidth: true; value: modelData.age; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
+                                Button {
+                                    objectName: "overdueCopy_" + index
+                                    text: "نسخ رسالة تذكير"
+                                    font.family: theme.fontFamily
+                                    onClicked: if (dashboard.vm) dashboard.vm.copyReminder(index)
+                                }
+                            }
+                        }
+                    }
+                    Empty { objectName: "overdueEmpty"; value: "لا توجد ديون متأخرة ✓"
+                            visible: !dashboard.vm || dashboard.vm.overdueDebts.count === 0 }
+                }
+
+                // --- أرصدة العملاء (customers permission): who owes and who is owed, from the customer ledger.
+                // Only customers with account activity from the first day of the current month; a settled account disappears on its own.
+                Card {
+                    objectName: "customerBalancesCard"
+                    visible: (!!dashboard.vm && dashboard.vm.canSeeBalances) && !dashboard.goldMode
+                    title: "أرصدة العملاء (من أول الشهر)"
+                    accent: theme.gold
+                    badge: dashboard.vm && dashboard.vm.customerBalances.length > 0 ? String(dashboard.vm.customerBalances.length) : ""
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.customerBalances : []
+                        delegate: ColumnLayout {
+                            required property var modelData
+                            required property int index
+                            objectName: "customerBalance_" + index
+                            Layout.fillWidth: true
+                            spacing: 0
+                            // Distinguished by COLOUR only (owner request 2026-10-25): RED = على العميل (he owes), BLUE = للعميل (we owe).
+                            Line { label: modelData.name + (modelData.code ? "  (" + modelData.code + ")" : "")
+                                   value: modelData.balance
+                                   valueColor: modelData.owes ? theme.red : theme.blue
+                                   strong: true }
+                        }
+                    }
+                    Empty { objectName: "customerBalancesEmpty"; value: "لا يوجد عملاء برصيد غير متعادل عليهم أو علينا"
+                            visible: !dashboard.vm || dashboard.vm.customerBalances.length === 0
+                            wrapMode: Text.WordWrap }
+                    Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap
+                          value: "العملاء الذين لديهم حركة حساب من أول الشهر الحالي فقط؛ عند تسوية الحساب يُشال الاسم تلقائيًا"
+                          color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
                 }
 
                 // --- أرصدة العملاء: لنا وعلينا (customers permission): one stacked bar of what customers owe the shop against what the shop owes them, over every unsettled account
                 Card {
                     id: splitCard
                     objectName: "balanceSplitCard"
+                    Layout.columnSpan: grid.columns === 2 ? 2 : 1           // the last card of a group takes the whole row when the grid has two columns (no half-empty row)
                     visible: (!!dashboard.vm && dashboard.vm.canSeeBalances) && !dashboard.goldMode
                     title: "أرصدة العملاء: لنا وعلينا"
                     accent: theme.gold
@@ -603,98 +693,8 @@ Item {
                           color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
                 }
 
-                // --- أرصدة العملاء (customers permission): who owes and who is owed, from the customer ledger.
-                // Only customers with account activity from the first day of the current month; a settled account disappears on its own.
-                Card {
-                    objectName: "customerBalancesCard"
-                    visible: (!!dashboard.vm && dashboard.vm.canSeeBalances) && !dashboard.goldMode
-                    title: "أرصدة العملاء (من أول الشهر)"
-                    accent: theme.gold
-                    badge: dashboard.vm && dashboard.vm.customerBalances.length > 0 ? String(dashboard.vm.customerBalances.length) : ""
-                    Repeater {
-                        model: dashboard.vm ? dashboard.vm.customerBalances : []
-                        delegate: ColumnLayout {
-                            required property var modelData
-                            required property int index
-                            objectName: "customerBalance_" + index
-                            Layout.fillWidth: true
-                            spacing: 0
-                            // Distinguished by COLOUR only (owner request 2026-10-25): RED = على العميل (he owes), BLUE = للعميل (we owe).
-                            Line { label: modelData.name + (modelData.code ? "  (" + modelData.code + ")" : "")
-                                   value: modelData.balance
-                                   valueColor: modelData.owes ? theme.red : theme.blue
-                                   strong: true }
-                        }
-                    }
-                    Empty { objectName: "customerBalancesEmpty"; value: "لا يوجد عملاء برصيد غير متعادل عليهم أو علينا"
-                            visible: !dashboard.vm || dashboard.vm.customerBalances.length === 0
-                            wrapMode: Text.WordWrap }
-                    Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap
-                          value: "العملاء الذين لديهم حركة حساب من أول الشهر الحالي فقط؛ عند تسوية الحساب يُشال الاسم تلقائيًا"
-                          color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
-                }
-
-                // --- ديون متأخرة (customers permission): open owed items at least N days old, oldest-first reading of the customer ledger
-                Card {
-                    objectName: "overdueCard"
-                    visible: (!!dashboard.vm && dashboard.vm.canSeeBalances) && !dashboard.goldMode
-                    title: "ديون متأخرة (أكثر من " + (dashboard.vm ? dashboard.vm.overdueDebts.days : 0) + " يوم)"
-                    accent: !!dashboard.vm && dashboard.vm.overdueDebts.count > 0 ? theme.red : theme.textMuted
-                    badge: dashboard.vm && dashboard.vm.overdueDebts.count > 0 ? String(dashboard.vm.overdueDebts.count) : ""
-                    Line { objectName: "overdueTotal"; label: "إجمالي المتأخر"; value: dashboard.vm ? dashboard.vm.overdueDebts.total : ""; strong: true
-                           valueColor: dashboard.vm && dashboard.vm.overdueDebts.count > 0 ? theme.red : theme.textMuted
-                           visible: !!dashboard.vm && dashboard.vm.overdueDebts.count > 0 }
-                    Repeater {
-                        model: dashboard.vm ? dashboard.vm.overdueDebts.rows : []
-                        delegate: ColumnLayout {
-                            required property var modelData
-                            required property int index
-                            objectName: "overdueRow_" + index
-                            Layout.fillWidth: true
-                            spacing: 0
-                            Line { label: modelData.name; value: modelData.amount; strong: true; valueColor: theme.red }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                layoutDirection: Qt.RightToLeft
-                                spacing: 8
-                                Txt { Layout.fillWidth: true; value: modelData.age; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
-                                Button {
-                                    objectName: "overdueCopy_" + index
-                                    text: "نسخ رسالة تذكير"
-                                    font.family: theme.fontFamily
-                                    onClicked: if (dashboard.vm) dashboard.vm.copyReminder(index)
-                                }
-                            }
-                        }
-                    }
-                    Empty { objectName: "overdueEmpty"; value: "لا توجد ديون متأخرة ✓"
-                            visible: !dashboard.vm || dashboard.vm.overdueDebts.count === 0 }
-                }
-
-                // --- سعر شراء الكسر اليوم (billing permission): the average paid per gram today against the latest stored SHOP_BUY of that karat
-                Card {
-                    objectName: "scrapTodayCard"
-                    visible: (dashboard.showRetired && dashboard.sales) && !dashboard.goldMode
-                    title: "سعر شراء الكسر اليوم"
-                    accent: theme.priceBuy
-                    Repeater {
-                        model: dashboard.vm ? dashboard.vm.scrapToday : []
-                        delegate: ColumnLayout {
-                            required property var modelData
-                            required property int index
-                            objectName: "scrapToday_" + index
-                            Layout.fillWidth: true
-                            spacing: 0
-                            Line { label: "عيار " + modelData.karat + "  •  " + modelData.grams; value: modelData.average; strong: true
-                                   valueColor: theme.balanceKaratColor(modelData.karat) }
-                            Txt { Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                  value: "سعر الشراء الآن " + modelData.price + (modelData.diff ? "  •  الفرق " + modelData.diff : "") + (modelData.discount ? "  •  " + modelData.discount : "")
-                                  color: modelData.over ? theme.amber : theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost }
-                        }
-                    }
-                    Empty { objectName: "scrapTodayEmpty"; value: "لم يُشترَ كسر اليوم بعد"
-                            visible: !dashboard.vm || dashboard.vm.scrapToday.length === 0 }
-                }
+                // --- section label: days
+                SectionTitle { objectName: "dashboardSection_days"; Layout.columnSpan: grid.columns; value: "حركة آخر الأيام" }
 
                 // --- المبيعات آخر 14 يومًا (billing permission): one bar per day, the length is the share of the best day
                 Card {
@@ -895,6 +895,7 @@ Item {
                 // --- فرق شراء/بيع المحل آخر 30 يومًا (من الأسعار المخزنة، بيوضح لو الهامش بيضيق)
                 Card {
                     objectName: "spreadChartCard"
+                    Layout.columnSpan: grid.columns === 2 ? 2 : 1           // the last card of a group takes the whole row when the grid has two columns (no half-empty row)
                     title: "فرق شراء/بيع عيار 21 — آخر 30 يومًا"
                     accent: theme.priceSell
                     visible: !dashboard.goldMode
@@ -947,6 +948,9 @@ Item {
                           value: dashboard.vm && dashboard.vm.priceChart.available ? "أقل فرق / أكبر فرق: " + dashboard.vm.priceChart.spreadMinText + " / " + dashboard.vm.priceChart.spreadMaxText + " ج" : "" }
                 }
 
+                // --- section label: reference
+                SectionTitle { objectName: "dashboardSection_reference"; Layout.columnSpan: grid.columns; value: "مرجع وأسعار" }
+
                 // --- مؤشرات سريعة (owner 2026-11-10): النهارده مقابل نفس اليوم الأسبوع اللي فات، الكسر مقابل المبيع بالعيار، ومدى سعر عيار 21 في آخر سنة
                 Card {
                     objectName: "insightsCard"
@@ -990,12 +994,33 @@ Item {
                             visible: !!dashboard.vm && !dashboard.vm.insights.hasWeek && !dashboard.vm.insights.hasRange && dashboard.vm.insights.scrap.length === 0 }
                 }
 
+                // --- أسعار العملات (GoldTimo /rates, public market prices: every logged-in user): how many pounds one unit of each chosen currency is worth. Choices live in Settings.
+                Card {
+                    objectName: "ratesCard"
+                    visible: (!!dashboard.vm && dashboard.vm.currencyRates.offered) && !dashboard.goldMode
+                    title: "أسعار العملات (بالجنيه)"
+                    accent: theme.priceBuy
+                    Repeater {
+                        model: dashboard.vm ? dashboard.vm.currencyRates.rows : []
+                        delegate: Line { required property var modelData
+                                         objectName: "rateRow_" + modelData.code
+                                         label: modelData.name + "  •  " + modelData.code; value: modelData.price; strong: true }
+                    }
+                    Empty { objectName: "ratesEmpty"; Layout.fillWidth: true; wrapMode: Text.WordWrap
+                            value: dashboard.vm && dashboard.vm.currencyRates.error.length > 0 ? dashboard.vm.currencyRates.error : "لا توجد أسعار عملات الآن"
+                            visible: !!dashboard.vm && dashboard.vm.currencyRates.rows.length === 0 }
+                    Txt { objectName: "ratesUpdated"; Layout.fillWidth: true; color: theme.textMuted; font.pixelSize: theme.fontCaption + dashboard.boost
+                          visible: !!dashboard.vm && dashboard.vm.currencyRates.rows.length > 0
+                          value: "GoldTimo • آخر تحديث " + (dashboard.vm ? dashboard.vm.currencyRates.updated : "")
+                                 + (dashboard.vm && dashboard.vm.currencyRates.error.length > 0 ? " • " + dashboard.vm.currencyRates.error : "") }
+                }
+
                 // (the price-alert card was removed from the home page on 2026-11-18 at the owner request; the view-model slots stay)
 
                 // --- الإشارة الفنية وإزاي أقرأ الشارت (owner 2026-11-10): عدّاد التحليل الفني للذهب + دليل قراءة بسيط
                 Card {
                     objectName: "chartGuideCard"
-                    Layout.columnSpan: 1
+                    Layout.columnSpan: grid.columns === 2 ? 2 : 1           // the last card of a group takes the whole row when the grid has two columns (no half-empty row)
                     title: "الإشارة الفنية للذهب • إزاي أقرأ الشارت"
                     accent: theme.priceSell
                     visible: !dashboard.goldMode

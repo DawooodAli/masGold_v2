@@ -19,6 +19,9 @@ Item {
                                         || approvalPopup.opened
     readonly property bool keysActive: visible && !confirmDialog.opened && !overlayOpen
     readonly property bool compact: width < 900
+    // Visual pass: the sale table columns share the width by weight, but never get narrower than their header word / typical value
+    // (item, barcode, karat, weight, factory, size, notes), so no header or value is cut at 1080x680. Header band and rows use the same list.
+    readonly property var saleColumnMin: [44, 52, 28, 52, 50, 54, 60]
 
     Theme { id: theme }
 
@@ -310,7 +313,7 @@ Item {
         id: strip
         property color accent: theme.border
         color: theme.bgSecondary
-        radius: 4
+        radius: theme.radiusMedium        // visual pass: 10 (was 4), the same corner language as the cards of the other pages
     }
 
     component FieldLabel: Label {
@@ -582,7 +585,7 @@ Item {
                 TextInputField {
                     id: customerPlace
                     objectName: "customerPlaceField"
-                    Layout.preferredWidth: invoicePage.compact ? 70 : 100
+                    Layout.preferredWidth: invoicePage.compact ? 84 : 100
                     placeholderText: text.length > 0 ? "" : "المنطقة"
                     onTextEdited: invoicePage.typedCustomer()
                     onAccepted: invoicePage.focusBarcode()
@@ -862,6 +865,7 @@ Item {
                             layoutDirection: Qt.RightToLeft
                             spacing: 4
                             Label {
+                                visible: !invoicePage.compact          // the field's own placeholder says «الباركود ثم Enter»: the strip is full when the page is compact
                                 text: "الباركود"
                                 color: theme.priceSell
                                 font.family: "Cairo"
@@ -873,7 +877,7 @@ Item {
                                 objectName: "invoiceBarcodeField"
                                 Layout.fillWidth: true
                                 Layout.maximumWidth: 320
-                                Layout.minimumWidth: 160
+                                Layout.minimumWidth: invoicePage.compact ? 110 : 160
                                 Layout.preferredHeight: 40
                                 topPadding: 5
                                 bottomPadding: 5
@@ -895,27 +899,32 @@ Item {
                             }
                             SmallButton {
                                 objectName: "invoiceAddBarcode"
+                                Layout.minimumWidth: implicitWidth
                                 text: "إضافة"
                                 enabled: barcodeField.text.length > 0
                                 onClicked: invoicePage.addBarcode()
                             }
                             SmallButton {
                                 objectName: "openItemSearch"
+                                Layout.minimumWidth: implicitWidth
                                 text: "بحث F3"
                                 onClicked: invoicePage.openItemSearch()
                             }
                             SmallButton {
                                 objectName: "openManualEntry"
+                                Layout.minimumWidth: implicitWidth
                                 text: "يدوي F5"
                                 onClicked: invoicePage.openManual()
                             }
                             SmallButton {
                                 objectName: "openStockSale"
+                                Layout.minimumWidth: implicitWidth
                                 text: "من الكسر F7"
                                 onClicked: invoicePage.openStockSale()
                             }
                             SmallButton {
                                 objectName: "openRafayea"
+                                Layout.minimumWidth: implicitWidth
                                 text: "رفايع"
                                 onClicked: invoicePage.openRafayea()
                             }
@@ -927,7 +936,7 @@ Item {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         color: theme.bgSecondary
-                        radius: 4
+                        radius: theme.radiusMedium
 
                         ColumnLayout {
                             anchors.fill: parent
@@ -942,13 +951,13 @@ Item {
                                 layoutDirection: Qt.RightToLeft
                                 spacing: 6
                                 // No per-line total for the employee (the saved lines keep every value).
-                                HeadCell { text: "الصنف"; Layout.preferredWidth: 5 }
-                                HeadCell { text: "الباركود"; Layout.preferredWidth: 3 }
-                                HeadCell { text: "عيار"; Layout.preferredWidth: 1 }
-                                HeadCell { text: "الوزن"; Layout.preferredWidth: 2 }
-                                HeadCell { text: "المصنع"; Layout.preferredWidth: 2 }
-                                HeadCell { text: "المقاس"; Layout.preferredWidth: 2 }
-                                HeadCell { text: "ملاحظات"; Layout.preferredWidth: 3 }
+                                HeadCell { text: "الصنف"; Layout.preferredWidth: 5; Layout.minimumWidth: invoicePage.saleColumnMin[0] }
+                                HeadCell { text: "الباركود"; Layout.preferredWidth: 3; Layout.minimumWidth: invoicePage.saleColumnMin[1] }
+                                HeadCell { text: "عيار"; Layout.preferredWidth: 1; Layout.minimumWidth: invoicePage.saleColumnMin[2] }
+                                HeadCell { text: "الوزن"; Layout.preferredWidth: 2; Layout.minimumWidth: invoicePage.saleColumnMin[3] }
+                                HeadCell { text: "المصنع"; Layout.preferredWidth: 2; Layout.minimumWidth: invoicePage.saleColumnMin[4] }
+                                HeadCell { text: "المقاس"; Layout.preferredWidth: 2; Layout.minimumWidth: invoicePage.saleColumnMin[5] }
+                                HeadCell { text: "ملاحظات"; Layout.preferredWidth: 3; Layout.minimumWidth: invoicePage.saleColumnMin[6] }
                             }
 
                             ListView {
@@ -1000,6 +1009,7 @@ Item {
                                         RowLayout {
                                             Layout.fillWidth: true
                                             Layout.preferredWidth: 5
+                                            Layout.minimumWidth: invoicePage.saleColumnMin[0]
                                             layoutDirection: Qt.RightToLeft
                                             spacing: 4
                                             Label {
@@ -1032,23 +1042,26 @@ Item {
                                         }
                                         Cell {
                                             Layout.preferredWidth: 3
+                                            Layout.minimumWidth: invoicePage.saleColumnMin[1]
                                             text: model.barcode || "—"
                                             color: theme.textMuted
                                             font.pixelSize: 11
                                             elide: Text.ElideRight
                                         }
-                                        Cell { Layout.preferredWidth: 1; text: model.karat; color: theme.balanceKaratColor(model.karat); font.bold: true }
-                                        Cell { Layout.preferredWidth: 2; text: model.weight; font.bold: true }
-                                        Cell { Layout.preferredWidth: 2; text: model.factory || "—"; color: theme.textSecondary }
+                                        Cell { Layout.preferredWidth: 1; Layout.minimumWidth: invoicePage.saleColumnMin[2]; text: model.karat; color: theme.balanceKaratColor(model.karat); font.bold: true }
+                                        Cell { Layout.preferredWidth: 2; Layout.minimumWidth: invoicePage.saleColumnMin[3]; text: model.weight; font.bold: true }
+                                        Cell { Layout.preferredWidth: 2; Layout.minimumWidth: invoicePage.saleColumnMin[4]; text: model.factory || "—"; color: theme.textSecondary }
                                         Cell {
                                             objectName: "saleSize_" + index
                                             Layout.preferredWidth: 2
+                                            Layout.minimumWidth: invoicePage.saleColumnMin[5]
                                             text: model.size || "—"
                                             color: theme.textSecondary
                                         }
                                         Cell {
                                             objectName: "saleNotes_" + index
                                             Layout.preferredWidth: 3
+                                            Layout.minimumWidth: invoicePage.saleColumnMin[6]
                                             text: model.notes
                                             color: theme.textSecondary
                                             font.pixelSize: 12
@@ -1683,6 +1696,7 @@ Item {
                                 model: invoiceVM.priceRows
                                 delegate: KaratChip {
                                     objectName: "karatChip_" + modelData.karat
+                                    Layout.preferredWidth: oldGoldPanel.tight ? 30 : 36        // room for the «متنوع» combo, which showed only «د» in a narrow panel
                                     text: modelData.karat
                                     selected: invoiceVM.oldGoldKaratId === modelData.karatId
                                     onClicked: invoicePage.chooseKarat(modelData.karat)
@@ -1692,7 +1706,7 @@ Item {
                             ComboBox {
                                 id: scrapKindCombo
                                 objectName: "scrapKindCombo"
-                                Layout.preferredWidth: oldGoldPanel.tight ? 62 : 92
+                                Layout.preferredWidth: oldGoldPanel.tight ? 78 : 92
                                 Layout.preferredHeight: 32
                                 font.family: "Cairo"
                                 font.pixelSize: 12
@@ -1724,7 +1738,8 @@ Item {
                                 Layout.preferredHeight: 40
                                 font.pixelSize: 16
                                 placeholderText: text.length > 0 ? ""
-                                                 : (invoiceVM.oldGoldKaratId < 0 ? "العيار أولاً" : "الوزن ثم Enter")
+                                                 : (invoiceVM.oldGoldKaratId < 0 ? (oldGoldPanel.tight ? "العيار" : "العيار أولاً")
+                                                                                  : (oldGoldPanel.tight ? "الوزن" : "الوزن ثم Enter"))
                                 onAccepted: invoicePage.addOldGold()
                             }
                             SmallButton {
@@ -1740,7 +1755,7 @@ Item {
                         Layout.fillWidth: true
                         Layout.fillHeight: true
                         color: theme.bgSecondary
-                        radius: 4
+                        radius: theme.radiusMedium
 
                         ColumnLayout {
                             anchors.fill: parent

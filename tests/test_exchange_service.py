@@ -232,7 +232,9 @@ class LifecycleRepo:
         c = kwargs["calculation"]
         # The 019 / 031 CHECKs, enforced here as MySQL would.
         assert c.pure_delta == c.replacement_pure - c.returned_pure
-        assert kwargs["money_received"] - kwargs["money_paid"] + kwargs["account_signed"] == c.signed_amount
+        waived = kwargs.get("waived_amount", 0)                          # the 111 CHECK: 0 <= waived <= |signed| and the three parts add up to the signed amount
+        assert 0 <= waived <= abs(c.signed_amount)
+        assert kwargs["money_received"] - kwargs["money_paid"] + kwargs["account_signed"] + (1 if c.signed_amount > 0 else -1 if c.signed_amount < 0 else 0) * waived == c.signed_amount
         assert min(c.gold_amount, c.making_charge, c.making_refund) >= 0
         assert c.making_refund == 0 or c.refund_eligible
         assert -5 < c.rounding_adjustment < 5
@@ -688,10 +690,23 @@ class InventoryAndAccountingTests(ExchangeTestCase):
                          (7, D("13365.00")))
         self.assertEqual(self.store.cash_movements, [])
 
-    def test_amount_must_match_exactly(self):
-        self.assertRefused("AMOUNT_MISMATCH", draft(replacements=(("301", "200"),), payments=(cash("12000.00"),)))
-        preview = self.service.preview(draft(replacements=(("301", "200"),), payments=(cash("12000.00"),)))
-        self.assertEqual(preview["blocking_problems"][0]["code"], "AMOUNT_MISMATCH")
+    def test_more_than_the_difference_is_refused_and_less_is_accepted_with_the_rest_waived(self):
+        # Owner 2026-11-27 ("accept only what was paid"): the difference of this fixture is 13,365.00 (see test_wrong_direction_is_refused).
+        over = draft(replacements=(("301", "200"),), payments=(cash("13365.01"),))
+        self.assertRefused("AMOUNT_MISMATCH", over)
+        self.assertEqual(self.service.preview(over)["blocking_problems"][0]["code"], "AMOUNT_MISMATCH")
+        short = draft(replacements=(("301", "200"),), payments=(cash("12000.00"),))
+        preview = self.service.preview(short)
+        self.assertEqual((preview["blocking_problems"], preview["waived_amount"], preview["money_received"]), ([], "1365.00", "12000.00"))
+        self.finalize(short)
+        stored = self.store.lifecycle[-1]                                  # the row the 111 CHECK validates: 12,000.00 paid + 1,365.00 waived = 13,365.00
+        self.assertEqual((stored["money_received"], stored["money_paid"], stored["account_signed"], stored["waived_amount"]),
+                         (D("12000.00"), D("0.00"), D("0.00"), D("1365.00")))
+        self.assertEqual(stored["details"]["waived_amount"], D("1365.00"))
+        self.assertEqual([p["amount"] for p in stored["details"]["payments"]], [D("12000.00")])        # the waived part is never a payment leg
+
+    def test_nothing_entered_is_refused_even_though_the_rest_may_be_waived(self):
+        self.assertRefused("SETTLEMENT_REQUIRED", draft(replacements=(("301", "200"),)))
 
     def test_zero_difference_takes_no_money(self):
         self.assertRefused("NO_DIFFERENCE_NO_MONEY", draft(payments=(cash("10.00"),)))
@@ -958,9 +973,12 @@ class SettlementBarTests(ExchangeTestCase):
         self.assertTrue(vm.methodNeedsAccount)
         self.assertEqual([a["name"] for a in vm.bankAccounts], ["حساب المحل"])   # only eligible (BANK) accounts
 
-    def test_customer_account_is_explicit_and_must_complete_exactly(self):
+    def test_customer_account_is_explicit_and_the_paid_part_is_accepted(self):
+        none = self.model(self.identified("301", "12.000", "10.500"))
+        self.assertEqual((none.settlement["remainingText"], none.canFinalize), ("المتبقي 10,965 ج", False))      # nothing entered: refused
         part = self.model(self.identified("301", "12.000", "10.500"), amount="10000")
-        self.assertEqual((part.settlement["remainingText"], part.canFinalize), ("المتبقي 965 ج", False))
+        self.assertEqual((part.settlement["remainingText"], part.settlement["waived"], part.canFinalize),
+                         ("الباقي 965 ج يُسجَّل متنازَلًا عنه", "965 ج", True))                                  # Owner 2026-11-27: the paid part is accepted
         full = self.model(self.identified("301", "12.000", "10.500"), amount="10000", account="965")
         self.assertEqual((full.settlement["remainingText"], full.canFinalize), ("التسوية مكتملة", True))
         over = self.model(self.identified("301", "12.000", "10.500"), amount="12465")

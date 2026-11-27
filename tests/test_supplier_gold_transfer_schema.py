@@ -24,7 +24,7 @@ class SupplierGoldTransferSchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_108_REFUSED_missing_107", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(108,")
         self.assertLessEqual(len(re.search(r"VALUES \(108,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 110)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 112)
 
     def test_the_document_is_insert_only_with_one_reversal_per_original_and_a_mandatory_reason(self):
         for needle in ("CREATE TABLE IF NOT EXISTS supplier_gold_transfers", "UNIQUE KEY uq_sgt_request (request_key)", "UNIQUE KEY uq_sgt_reverses (reverses_id)",

@@ -97,7 +97,7 @@ class MigrationContractTests(unittest.TestCase):
         self.assertIn("MIGRATION_109_REFUSED_missing_108", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(109,")
         self.assertLessEqual(len(re.search(r"VALUES \(109,'([^']*)'", self.forward).group(1)), 150)
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 110)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 112)
 
     def test_both_entry_checks_gain_the_two_marker_kinds_for_legacy_trips_only(self):
         for name in ("chk_mte_kind", "chk_mte_mode_kind"):

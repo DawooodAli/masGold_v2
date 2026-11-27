@@ -29,7 +29,7 @@ class CustodyCashPrivateSchemaTests(unittest.TestCase):
         self.assertIn("MIGRATION_105_REFUSED_missing_104", self.forward)
         self.assertIn("MIGRATION_105_REFUSED_missing_090_private_account_entries", self.forward)
         self.assertRegex(self.forward, r"INSERT INTO schema_migrations\(version,name\) VALUES \(105,")
-        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 110)
+        self.assertEqual(len({f.name: f for f in load_chain(require_committed=False)}), 112)
 
     def test_the_new_kind_is_legacy_only_fits_the_column_and_the_rollback_restores_080(self):
         self.assertEqual(kinds(self.forward), kinds(self.m080) + ["ST_CASH_PRIV"])

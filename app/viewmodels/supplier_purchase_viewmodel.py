@@ -239,17 +239,28 @@ class SupplierPurchaseViewModel(QObject):
     # ------------------------------------------------------------ live form totals (the same pure rules)
     @Slot("QVariantList", result="QVariantMap")
     def previewGroups(self, groups):
-        """Totals of the invoice form: supplier weight, gross making and each group's making (the karat is the supplier's)."""
+        """Totals of the invoice form: supplier weight, gross making and each group's making (every group of the supplier's karat)."""
+        return self.previewGroupsKarat(groups, 0)
+
+    @Slot("QVariantList", int, result="QVariantMap")
+    def previewGroupsKarat(self, groups, account_karat):
+        """Totals of the invoice form (migration 112): actual weight, gross making, each group's making and, for a group whose karat differs from the supplier's
+        ACCOUNT karat, the conversion line (its actual grams -> the grams credited to the account). The same pure rules as the service; QML only shows the texts."""
+        account = int(account_karat or 0)
         try:
             normalized = rules.normalize_groups(
-                [{"weight": g.get("weight"), "making_per_gram": g.get("rate"), "description": g.get("description")}
-                 for g in groups])
+                [{"weight": g.get("weight"), "making_per_gram": g.get("rate"), "description": g.get("description"),
+                  "karat_id": int(g.get("karatId") or 0) or None, "karat_value": int(g.get("karatValue") or 0) or (account or None)}
+                 for g in groups], account or None)
         except rules.SupplierRuleError as exc:
-            return {"valid": False, "error": str(exc), "weightText": "—", "makingText": "—",
-                    "groupMaking": []}
+            return {"valid": False, "error": str(exc), "weightText": "—", "makingText": "—", "creditText": "", "groupMaking": [], "groupCredit": []}
         weight = normalized["total_weight"]
+        credits = [f"{grams(g['supplier_weight_grams'])} جرام عيار {g['karat_value']} = {grams(g['credited_weight_grams'])} جرام عيار {account} تُضاف لحسابنا"
+                   if account and g["karat_value"] and g["karat_value"] != account else "" for g in normalized["groups"]]
+        mixed = any(credits)
         return {"valid": True, "error": "", "weightText": grams(weight), "makingText": money(normalized["gross_making"]),
-                "groupMaking": [money(g["making_total"]) for g in normalized["groups"]]}
+                "creditText": f"{grams(normalized['credited_total'])} جرام عيار {account}" if mixed else "",
+                "groupMaking": [money(g["making_total"]) for g in normalized["groups"]], "groupCredit": credits}
 
     @Slot(str, str, result=str)
     def pieceWeightProblem(self, group_id, weight):
@@ -307,7 +318,8 @@ class SupplierPurchaseViewModel(QObject):
 
     @staticmethod
     def _groups(groups):
-        return [{"weight": g.get("weight"), "making_per_gram": g.get("rate"), "description": g.get("description")}
+        return [{"weight": g.get("weight"), "making_per_gram": g.get("rate"), "description": g.get("description"),
+                 "karat_id": int(g.get("karatId") or 0) or None}               # QML numbers arrive as floats
                 for g in groups]
 
     @Slot(str, int, str, str, "QVariantList", str, str, bool)
@@ -529,9 +541,13 @@ class SupplierPurchaseViewModel(QObject):
                      "reference": d["supplier_reference"] or "", "notes": d["notes"] or "",
                      "date": d["invoice_date"].isoformat() if hasattr(d["invoice_date"], "isoformat") else str(d["invoice_date"]),
                      "groups": [{"weight": format(g["supplier_weight"], "f"), "rate": format(g["making_per_gram"], "f"),
-                                 "description": g["description"]} for g in d["groups"]]},
+                                 "description": g["description"], "karatId": int(g.get("karat_id") or d["karat_id"]),
+                                 "karatValue": int(g.get("karat_value") or d["karat_value"])} for g in d["groups"]]},
             "groups": [{"id": g["id"], "no": g["group_no"], "description": g["description"],
                         "weightText": grams(g["supplier_weight"]), "rateText": rate(g["making_per_gram"]) + " / جرام",
+                        "karat": int(g.get("karat_value") or d["karat_value"]),
+                        "karatDiffers": int(g.get("karat_value") or d["karat_value"]) != int(d["karat_value"]),
+                        "creditedText": grams(g.get("credited_weight", g["supplier_weight"])),
                         "adjusted": g.get("adjustment", 0) != 0,
                         "adjustmentText": ("+" if g.get("adjustment", 0) > 0 else "") + grams(g.get("adjustment", 0)),
                         "effectiveText": grams(g.get("effective_weight", g["supplier_weight"])),

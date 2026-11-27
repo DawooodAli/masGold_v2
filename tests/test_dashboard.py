@@ -608,6 +608,34 @@ class DashboardPageTests(page_harness.InvoicePageTests):
         self.assertIsNone(self.visible_item("todayCard"))
         self.assertEqual(self.warnings, [])
 
+    def test_dashboard_home_reads_in_order_of_importance_with_three_labelled_groups_at_every_size(self):
+        """Owner 2026-11-26: today's figures first, then «محتاج متابعة» (overdue debts, customer balances, the balance split), «حركة آخر الأيام» (the three charts) and «مرجع وأسعار»;
+        the last card of a group takes the whole row in a two-column grid, so no row is left half empty. Real window, real positions."""
+        self.show_retired = False
+        self.open_dashboard(self.busy_snapshot())
+        order = ("todayCard", "dashboardSection_follow", "overdueCard", "customerBalancesCard", "balanceSplitCard", "dashboardSection_days", "salesDaysCard", "scrapSoldCard",
+                 "spreadChartCard", "dashboardSection_reference", "insightsCard", "ratesCard", "chartGuideCard")
+        for width, height in page_harness.SIZES:
+            self.root.setWidth(width)
+            self.root.setHeight(height)
+            QTest.qWait(250)
+            page = self.item("dashboardPage")
+            with self.subTest(size=(width, height)):
+                tops = []
+                for name in order:
+                    item = self.item(name)
+                    self.assertTrue(item.property("visible"), f"{name} hidden at {width}x{height}")
+                    point = item.mapToItem(page, QPointF(0, 0))
+                    self.assertGreaterEqual(point.x(), -1, f"{name} clipped left at {width}x{height}")
+                    self.assertLessEqual(point.x() + item.property("width"), page.property("width") + 1, f"{name} overflows at {width}x{height}")
+                    tops.append(point.y())
+                self.assertEqual(tops, sorted(tops), f"groups are out of order at {width}x{height}")
+                page_width = page.property("width")
+                if page_width < 1000:                                                  # two columns: the last card of each group takes the whole row
+                    for name in ("balanceSplitCard", "spreadChartCard", "chartGuideCard"):
+                        self.assertGreaterEqual(self.item(name).property("width"), page_width - 60, f"{name} should take the whole row at {width}x{height}")
+        self.assertEqual(self.warnings, [])
+
     def test_five_older_cards_are_hidden_by_default(self):
         self.show_retired = False
         self.open_dashboard(self.busy_snapshot())

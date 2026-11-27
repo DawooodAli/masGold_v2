@@ -185,17 +185,36 @@ def equivalent_21(weight, karat_value):
     return (Decimal(weight) * Decimal(str(karat_value)) / BASE_KARAT).quantize(EQ21_STEP, rounding=ROUND_HALF_UP)
 
 
-def normalize_groups(groups):
+def credited_weight(weight, group_karat_value, account_karat_value):
+    """Migration 112: the grams of a group (ACTUAL grams of its own karat) converted into the supplier's ACCOUNT karat = weight x group karat / account karat.
+
+    Computed ONCE per group at high precision and quantized to 0.001 g ROUND_HALF_UP (the same rule as a settlement credit). The sign is kept and the rounding is symmetric,
+    so ADD x and DEDUCT x of one group are exact opposites. Same karat returns the weight itself, untouched. A non-zero weight that would convert to zero is refused."""
+    weight = Decimal(str(weight))
+    if int(group_karat_value) == int(account_karat_value):
+        return weight
+    with localcontext() as context:
+        context.prec = 50
+        raw = abs(weight) * Decimal(str(group_karat_value)) / Decimal(str(account_karat_value))
+        credited = raw.quantize(WEIGHT_STEP, rounding=ROUND_HALF_UP)
+    if weight != 0 and credited == 0:
+        raise SupplierRuleError("CREDIT_ROUNDS_TO_ZERO", "الوزن صغير بحيث يُحتسب في حساب المورد صفرًا: زِد الوزن.")
+    return credited if weight >= 0 else -credited
+
+
+def normalize_groups(groups, account_karat_value=None):
     """Validated making groups with their exact totals.
 
-    Returns {"groups": [...], "total_weight": Decimal, "gross_making": Decimal}. The invoice supplier weight is the
-    sum of the group weights, so the groups always reconcile with it. Raises SupplierRuleError otherwise."""
+    Returns {"groups": [...], "total_weight": Decimal, "credited_total": Decimal, "gross_making": Decimal}. The invoice supplier weight is the
+    sum of the group ACTUAL weights, so the groups always reconcile with it. Migration 112: a group may carry its own karat (`karat_id` + `karat_value`, resolved by the
+    service); its grams are converted into the supplier's account karat (`account_karat_value`) as `credited_weight_grams`, and `credited_total` is their sum. A group
+    without a karat is of the account karat and credits exactly its own grams. Raises SupplierRuleError otherwise."""
     groups = list(groups or [])
     if not groups:
         raise SupplierRuleError("GROUPS_REQUIRED", "أضف مجموعة مصنعية واحدة على الأقل.")
     if len(groups) > MAX_GROUPS:
         raise SupplierRuleError("GROUPS_TOO_MANY", f"الحد الأقصى {MAX_GROUPS} مجموعة في الفاتورة.")
-    cleaned, total_weight, gross = [], Decimal("0.000"), Decimal("0.00")
+    cleaned, total_weight, credited_total, gross = [], Decimal("0.000"), Decimal("0.000"), Decimal("0.00")
     for number, group in enumerate(groups, 1):
         group = group or {}
         weight = parse_weight(group.get("weight"), f"وزن المجموعة {number}")
@@ -204,11 +223,15 @@ def normalize_groups(groups):
         if description and len(description) > 150:
             raise SupplierRuleError("DESCRIPTION_LONG", f"وصف المجموعة {number} أطول من الحد المسموح.")
         making = group_making_total(weight, rate)
+        karat_value = group.get("karat_value")
+        credited = weight if karat_value in (None, "") or account_karat_value is None else credited_weight(weight, karat_value, account_karat_value)
         cleaned.append({"group_no": number, "description": description, "supplier_weight_grams": weight,
-                        "making_per_gram": rate, "making_total": making})
+                        "making_per_gram": rate, "making_total": making, "karat_id": group.get("karat_id"),
+                        "karat_value": None if karat_value in (None, "") else int(karat_value), "credited_weight_grams": credited})
         total_weight += weight
+        credited_total += credited
         gross += making
-    return {"groups": cleaned, "total_weight": total_weight, "gross_making": gross}
+    return {"groups": cleaned, "total_weight": total_weight, "credited_total": credited_total, "gross_making": gross}
 
 
 def check_supplier_karat_change(current_karat_id, wanted_karat_id, history, neutral=False):

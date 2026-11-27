@@ -62,6 +62,11 @@ ApplicationWindow {
     property int currentPage: 0
     // الإدارة (owner 2026-11-13): the management area = the reviews page (10), the reports (5), the inventory pages (2, 11, 12), the suppliers (14), the market custody (15) and the
     // settings pages (6 settings, 7 factories, 8 item types, 9 categories, 13 users). Everything here sits behind the manager lock and keeps the sidebar button «الإدارة» selected.
+    // Visual pass: the sidebar has up to six navigation buttons (cash is shown to users who may see it). Measured with all six, the account row ran past the
+    // window bottom at 1280x800 and 1080x680, so the sidebar steps down at 840 px (compact) and again at 720 px (tight) and keeps a 14 px margin at every height.
+    readonly property bool sidebarShort: height < 840          // no subtitle, a little tighter than the full layout
+    readonly property bool sidebarCompact: height < 760        // smaller buttons and boxes
+    readonly property bool sidebarTight: height < 720          // the smallest ones
     readonly property bool inAdminArea: currentPage === 10 || currentPage === 5 || currentPage === 2 || currentPage === 11 || currentPage === 12 || currentPage === 14 || currentPage === 15
                                         || currentPage === 6 || currentPage === 7 || currentPage === 8 || currentPage === 9 || currentPage === 13
     function openCustomerDetails(customerId) {
@@ -1247,142 +1252,149 @@ ApplicationWindow {
                             // DATE + BARCODE FILTERS
                             // -----------------------------------------
 
-                            RowLayout {
+                            // Responsive (Task 06): a right-to-left Flow, not one RowLayout. The old row's minimum width was the sum of its eleven children (1039 px),
+                            // which stretched the whole filter card past the page at 1280 and 1080. Each label stays with its control; the groups wrap as a unit.
+                            Flow {
+                                id: inventoryDateBarcodeFlow
                                 Layout.fillWidth: true
-
-                                layoutDirection:
-                                    Qt.RightToLeft
-
+                                layoutDirection: Qt.RightToLeft
                                 spacing: 6
 
+                                RowLayout {
+                                    id: inventoryDateGroup
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 6
 
-                                Label {
-                                    text: "تاريخ إدخال القطعة"
+                                    Label {
+                                        text: "تاريخ إدخال القطعة"
 
-                                    color: theme.textSecondary
+                                        color: theme.textSecondary
 
-                                    font.family: "Cairo"
-                                    font.pixelSize: 11
+                                        font.family: "Cairo"
+                                        font.pixelSize: 11
 
-                                    horizontalAlignment:
-                                        Text.AlignRight
-                                }
-
-
-                                TextField {
-                                    id: entryDateFilterField
-
-                                    Layout.preferredWidth: 120
-                                    Layout.preferredHeight: 38
-
-                                    text:
-                                        inventoryPage.entryDateFilter
-
-                                    placeholderText:
-                                        "YYYY-MM-DD"
-
-                                    font.family: "Cairo"
-
-                                    horizontalAlignment:
-                                        TextInput.AlignRight
-
-                                    onEditingFinished: {
-                                        inventoryPage.entryDateFilter =
-                                            text.trim()
-
-                                        inventoryPage.clearSelection()
+                                        horizontalAlignment:
+                                            Text.AlignRight
                                     }
-                                }
 
+                                    TextField {
+                                        id: entryDateFilterField
 
-                                Button {
-                                    text: "اليوم"
+                                        Layout.preferredWidth: 120
+                                        Layout.preferredHeight: 38
 
-                                    font.family: "Cairo"
-
-                                    onClicked: {
-                                        inventoryPage.entryDateFilter =
-                                            inventoryPage.todayText()
-
-                                        entryDateFilterField.text =
+                                        text:
                                             inventoryPage.entryDateFilter
 
-                                        inventoryPage.clearSelection()
+                                        placeholderText:
+                                            "YYYY-MM-DD"
+
+                                        font.family: "Cairo"
+
+                                        horizontalAlignment:
+                                            TextInput.AlignRight
+
+                                        onEditingFinished: {
+                                            inventoryPage.entryDateFilter =
+                                                text.trim()
+
+                                            inventoryPage.clearSelection()
+                                        }
                                     }
-                                }
 
+                                    Button {
+                                        text: "اليوم"
 
-                                Button {
-                                    text: "كل التواريخ"
+                                        font.family: "Cairo"
 
-                                    font.family: "Cairo"
+                                        onClicked: {
+                                            inventoryPage.entryDateFilter =
+                                                inventoryPage.todayText()
 
-                                    onClicked: {
-                                        inventoryPage.entryDateFilter = ""
-                                        entryDateFilterField.text = ""
-                                        inventoryPage.clearSelection()
+                                            entryDateFilterField.text =
+                                                inventoryPage.entryDateFilter
+
+                                            inventoryPage.clearSelection()
+                                        }
                                     }
-                                }
 
+                                    Button {
+                                        text: "كل التواريخ"
 
-                                Label {
-                                    text: "حالة الباركود"
+                                        font.family: "Cairo"
 
-                                    color: theme.textSecondary
-
-                                    font.family: "Cairo"
-                                    font.pixelSize: 11
-
-                                    horizontalAlignment:
-                                        Text.AlignRight
-                                }
-
-
-                                ComboBox {
-
-                                    Layout.preferredWidth: 125
-                                    Layout.preferredHeight: 38
-
-                                    model: [
-                                        "الكل",
-                                        "بدون باركود",
-                                        "بباركود"
-                                    ]
-
-                                    currentIndex:
-                                        inventoryPage.barcodeFilterMode
-
-                                    font.family: "Cairo"
-
-                                    onActivated: {
-                                        inventoryPage.barcodeFilterMode =
-                                            currentIndex
-
-                                        inventoryPage.clearSelection()
+                                        onClicked: {
+                                            inventoryPage.entryDateFilter = ""
+                                            entryDateFilterField.text = ""
+                                            inventoryPage.clearSelection()
+                                        }
                                     }
+
                                 }
 
+                                RowLayout {
+                                    height: inventoryDateGroup.implicitHeight          // same line height as the button groups, so the label and combo stay centred
+                                    layoutDirection: Qt.RightToLeft
+                                    spacing: 6
 
-                                Item {
-                                    Layout.fillWidth: true
+                                    Label {
+                                        text: "حالة الباركود"
+
+                                        color: theme.textSecondary
+
+                                        font.family: "Cairo"
+                                        font.pixelSize: 11
+
+                                        horizontalAlignment:
+                                            Text.AlignRight
+                                    }
+
+                                    ComboBox {
+
+                                        Layout.preferredWidth: 125
+                                        Layout.preferredHeight: 38
+
+                                        model: [
+                                            "الكل",
+                                            "بدون باركود",
+                                            "بباركود"
+                                        ]
+
+                                        currentIndex:
+                                            inventoryPage.barcodeFilterMode
+
+                                        font.family: "Cairo"
+
+                                        onActivated: {
+                                            inventoryPage.barcodeFilterMode =
+                                                currentIndex
+
+                                            inventoryPage.clearSelection()
+                                        }
+                                    }
+
                                 }
 
+                                RowLayout {
+                                    height: inventoryDateGroup.implicitHeight
+                                    layoutDirection: Qt.RightToLeft
 
-                                Label {
-                                    text:
-                                        "الظاهر: "
-                                        + inventoryPage.filteredItems().length
-                                        + " قطعة"
+                                    Label {
+                                        text:
+                                            "الظاهر: "
+                                            + inventoryPage.filteredItems().length
+                                            + " قطعة"
 
-                                    color: theme.textMuted
+                                        color: theme.textMuted
 
-                                    font.family: "Cairo"
-                                    font.pixelSize: 10
+                                        font.family: "Cairo"
+                                        font.pixelSize: 10
 
-                                    horizontalAlignment:
-                                        Text.AlignRight
+                                        horizontalAlignment:
+                                            Text.AlignRight
+                                    }
+
                                 }
-
 
                                 Button {
                                     objectName: "inventoryResetFilters"
@@ -1402,7 +1414,6 @@ ApplicationWindow {
                                     }
                                 }
 
-
                                 Button {
                                     objectName: "inventoryScrapOnly"
                                     text: "♻ قطع من الكسر"
@@ -1412,7 +1423,6 @@ ApplicationWindow {
                                     onClicked: inventoryVM.setScrapOnly(checked)
                                 }
 
-
                                 Button {
                                     text: "🧾 سجل الطباعة"
 
@@ -1421,6 +1431,7 @@ ApplicationWindow {
                                     onClicked:
                                         barcodePrintHistoryDialog.openForToday()
                                 }
+
                             }
 
 
@@ -2383,7 +2394,7 @@ ApplicationWindow {
             ColumnLayout {
                 anchors.fill: parent
                 anchors.margins: 14
-                spacing: root.height < 720 ? 3 : 7
+                spacing: root.sidebarCompact ? 3 : root.sidebarShort ? 5 : 7        // visual pass: 790 (was 720): at 720-775 px the account row ran past the window edge
 
 
                 Label {
@@ -2404,7 +2415,7 @@ ApplicationWindow {
 
                 Label {
                     text: "ثقة الدهب فى مكانها "
-                    visible: root.height >= 720
+                    visible: !root.sidebarShort
 
                     color: theme.textMuted
 
@@ -2516,9 +2527,10 @@ ApplicationWindow {
                     layoutDirection: Qt.RightToLeft
                     rowSpacing: 5
                     columnSpacing: 6
-                    readonly property int labelSize: 12
-                    readonly property int karatSize: 18
-                    readonly property int valueSize: 15
+                    // Visual pass (owner request 2026-11-27: "make the scrap and gold balances a bit bigger"): one step up, a notch less in a short window
+                    readonly property int labelSize: root.sidebarCompact ? 12 : 13
+                    readonly property int karatSize: root.sidebarCompact ? 19 : 20
+                    readonly property int valueSize: root.sidebarCompact ? 16 : 17
                     readonly property bool failed: balancesVM.errorMessage.length > 0
                     ToolTip.visible: failed && stripHover.hovered
                     ToolTip.text: "تعذر تحميل الأرصدة"
@@ -2701,7 +2713,7 @@ ApplicationWindow {
 
                 Label {
                     text: "masGold v2"
-                    visible: root.height >= 720
+                    visible: root.height >= 880
 
                     color: theme.textDisabled
 
@@ -2732,7 +2744,7 @@ ApplicationWindow {
         property string valueName: ""
         property string value: ""
         property bool zero: false
-        Layout.preferredHeight: root.height < 720 ? 32 : 36               // one line: «كسر 21» on the right, the figure on the left
+        Layout.preferredHeight: root.sidebarTight ? 32 : root.sidebarCompact ? 34 : root.sidebarShort ? 38 : 40               // one line: «كسر 21» on the right, the figure on the left
         Layout.fillWidth: true
         Layout.preferredWidth: 1
         Layout.minimumWidth: boxRow.implicitWidth + 16
@@ -2781,7 +2793,7 @@ ApplicationWindow {
         property bool selected: false
 
         Layout.fillWidth: true
-        Layout.preferredHeight: root.height < 720 ? 36 : 40
+        Layout.preferredHeight: root.sidebarTight ? 30 : root.sidebarCompact ? 34 : root.sidebarShort ? 38 : 40
 
         flat: true
         hoverEnabled: true
@@ -3281,7 +3293,7 @@ ApplicationWindow {
                                             CustomerLabel {
                                                 value: String(modelData.status_label || "")
                                                 color: modelData.is_active ? theme.green : theme.textMuted
-                                                font.pixelSize: 10
+                                                font.pixelSize: 11
                                                 wrapMode: Text.NoWrap
                                             }
                                         }
@@ -3302,7 +3314,7 @@ ApplicationWindow {
                                             CustomerLabel {
                                                 value: "آخر حركة: " + (modelData.last_transaction_text || "—")
                                                 color: theme.textMuted
-                                                font.pixelSize: 10
+                                                font.pixelSize: 11
                                                 wrapMode: Text.NoWrap
                                                 elide: Text.ElideLeft
                                                 Layout.maximumWidth: 150
@@ -3346,7 +3358,7 @@ ApplicationWindow {
                                     Layout.fillWidth: true
                                     value: "صفحة " + customerVM.page + " · حتى " + customerVM.pageSize + " عميل"
                                     color: theme.textMuted
-                                    font.pixelSize: 10
+                                    font.pixelSize: 11
                                 }
                                 CustomerButton {
                                     text: "السابق"
@@ -3685,7 +3697,7 @@ ApplicationWindow {
                                                        ? (modelData.reference || "") + "  |  " + (modelData.date_text || "—")
                                                        : "رقم السجل: " + modelData.id + "  |  " + (modelData.occurred_at || modelData.created_at || "—")
                                                 color: theme.textMuted
-                                                font.pixelSize: 10
+                                                font.pixelSize: 11
                                             }
                                             CustomerLabel {
                                                 Layout.fillWidth: true

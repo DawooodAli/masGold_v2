@@ -816,7 +816,7 @@ using Git (`git branch --show-current`, `git log --oneline -10`, `git status`); 
 report unexpected files or commits. Do not treat any commit hash in this document as the
 current HEAD. Read both `AGENTS.md` and `CLAUDE.md`.
 
-- Schema chain: migrations `001–110` in `database/schema`; next migration is `111`
+- Schema chain: migrations `001–112` in `database/schema`; next migration is `113`
   unless later repository state proves otherwise. Already-applied migrations are
   immutable, including 019–056. `database/migrations/*.sql` are historical prototypes
   (see its README) and are never applied. Future schema work needs the next forward migration,

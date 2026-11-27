@@ -129,7 +129,7 @@ class InvoiceLifecycleRepository(BaseRepository):
                    t.valued_delta_grams, t.price_basis, t.price_karat_value, t.price_per_gram, t.gold_amount,
                    t.making_rate_per_gram, t.making_charge,
                    t.making_refund, t.making_refund_eligible, t.signed_amount, t.money_received,
-                   t.money_paid, t.account_signed, t.price_snapshot_json, t.details_json, t.notes,
+                   t.money_paid, t.account_signed, t.waived_amount, t.price_snapshot_json, t.details_json, t.notes,
                    t.occurred_at, u.display_name AS performed_by_name
             FROM invoice_lifecycle_transactions t
             JOIN invoices i ON i.id = t.source_invoice_id
@@ -173,7 +173,7 @@ class InvoiceLifecycleRepository(BaseRepository):
 
     def insert_transaction(self, *, source_invoice_id, source_finalized_at, customer_id, calculation,
                            money_received, money_paid, account_signed, price_snapshot, details, notes,
-                           performed_by_user_id, performed_by_employee_id, occurred_at):
+                           performed_by_user_id, performed_by_employee_id, occurred_at, waived_amount=0):
         c = calculation
         lifecycle_id, _ = self._execute(
             """
@@ -183,17 +183,17 @@ class InvoiceLifecycleRepository(BaseRepository):
                 valued_delta_grams, price_basis, price_karat_value, price_per_gram, gold_amount,
                 making_rate_per_gram, making_charge, making_refund,
                 making_refund_eligible, rounding_adjustment, signed_amount, money_received, money_paid,
-                account_signed, price_snapshot_json, details_json, notes, performed_by_user_id,
+                account_signed, waived_amount, price_snapshot_json, details_json, notes, performed_by_user_id,
                 performed_by_employee_id, occurred_at
             )
             VALUES ('EXCHANGE', 'FINALIZED', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (_id(source_invoice_id), source_finalized_at, _optional_id(customer_id),
              c.returned_pure, c.replacement_pure, c.pure_delta, c.valuation_basis, c.valued_delta,
              c.price_basis, c.price_karat, c.price_per_gram,
              c.gold_amount, c.making_rate, c.making_charge, c.making_refund, c.refund_eligible,
-             c.rounding_adjustment, c.signed_amount, money_received, money_paid, account_signed, _json(price_snapshot),
+             c.rounding_adjustment, c.signed_amount, money_received, money_paid, account_signed, waived_amount, _json(price_snapshot),
              _json(details), notes, performed_by_user_id, performed_by_employee_id, occurred_at),
         )
         return str(lifecycle_id)

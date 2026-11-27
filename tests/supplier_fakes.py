@@ -549,8 +549,8 @@ class PurchaseRepo(SupplierRepo):
                              "description": group.get("description"), "supplier_weight_grams": group["supplier_weight_grams"],
                              "making_per_gram": group["making_per_gram"], "supplier_id": invoice["supplier_id"],
                              "supplier_name": self._joined(invoice)["supplier_name"], "supplier_reference": invoice.get("supplier_reference"),
-                             "invoice_date": invoice["invoice_date"], "karat_id": invoice["karat_id"],
-                             "karat_value": self._joined(invoice)["karat_value"],
+                             "invoice_date": invoice["invoice_date"], "karat_id": group.get("karat_id") or invoice["karat_id"],
+                             "karat_value": group.get("karat_value") or self._joined(invoice)["karat_value"],
                              "actual_weight": self.group_actual_weight(group["id"]),
                              "piece_count": sum(1 for link in self.db.links if link["group_id"] == group["id"])})
         return rows

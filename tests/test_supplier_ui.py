@@ -1,6 +1,7 @@
 """Purchasing & Suppliers V1 — view models and the real Main.qml page. Positions are worded with their direction
 (never a bare signed number), the invoice totals come from the rules module, and the whole flow works with real
 clicks at the target sizes: supplier → invoice with making groups → post → piece-by-piece intake."""
+import os
 from datetime import date
 from decimal import Decimal as D
 from pathlib import Path
@@ -275,6 +276,55 @@ class SupplierPageTests(harness.InvoicePageTests):
         self.assertEqual(len(self.db.gold), 1)                                    # intake never touches the ledgers
         self.assertEqual(self.warnings, [])
 
+    def test_a_24k_group_on_a_21k_supplier_is_chosen_converted_and_posted_with_real_clicks(self):
+        """Migration 112: the group's karat combo, the conversion line and the credited total come from the service rules; the ledger gets the converted grams."""
+        self.master._karats = [{"id": 1, "karat_value": 21}, {"id": 2, "karat_value": 18}, {"id": 3, "karat_value": 24}]
+        self.master.dataChanged.emit()
+        self.rights(*ALL)
+        self.open_suppliers()
+        sid = self.svm._service.create_supplier(self.NAME, karat_id=1)
+        self.svm.refresh()
+        self.svm.selectSupplier(sid)
+        self.wait_idle()
+        self.wait_until(lambda: self.svm.selectedSupplierId != "" and "id" in self.svm.detail, "supplier selected")
+        self.click("newInvoiceButton")
+        self.wait_until(lambda: self.item("newSupplierInvoiceDialog").property("opened"), "invoice dialog")
+        QTest.qWait(150)
+        self.type_in("groupWeight_0", "100")
+        self.type_in("groupRate_0", "50")
+        self.assertEqual(self.item("groupKarat_0").property("displayText"), "عيار 21")                          # the default is the supplier's account karat
+        self.assertIsNone(self.visible_item("groupCredit_0"))                             # nothing to convert yet
+        self.pick("groupKarat_0", 2)                                                     # 24K
+        QTest.qWait(120)
+        self.assertEqual(self.item("groupKarat_0").property("displayText"), "عيار 24")
+        self.assertIn("100.000 جرام عيار 24 = 114.286 جرام عيار 21", self.text("groupCredit_0"))
+        self.assertEqual(self.text("invoiceTotalWeight"), "وزن المورد: 100.000")        # the ACTUAL grams
+        self.assertEqual(self.text("invoiceTotalMaking"), "إجمالي المصنعيات: 5,000 ج")  # making on the actual grams
+        self.assertIn("114.286", self.text("invoiceTotalCredit"))
+        self.click("addGroupButton")
+        self.type_in("groupWeight_1", "40")
+        self.type_in("groupRate_1", "100")
+        QTest.qWait(100)
+        self.assertIn("154.286", self.text("invoiceTotalCredit"))                        # 114.286 + 40.000
+        for size in harness.SIZES:
+            self.root.setWidth(size[0])
+            self.root.setHeight(size[1])
+            QTest.qWait(150)
+            review = os.getenv("MASGOLD_UI_REVIEW_DIR")
+            if review:
+                self.root.grabWindow().save(os.path.join(review, f"supplier_group_karat_{size[0]}x{size[1]}.png"))
+            for name in ("groupKarat_0", "groupWeight_0", "groupRate_0", "groupCredit_0", "postInvoiceButton", "saveDraftButton", "invoiceTotalCredit"):
+                with self.subTest(size=size, item=name):
+                    self.assert_inside_window(self.item(name))
+        self.click("postInvoiceButton")
+        self.wait_until(lambda: any(i["status"] == "POSTED" for i in self.db.invoices.values()), "posted: " + self.pvm.errorMessage)
+        (gold,) = self.db.gold
+        self.assertEqual((gold["karat_id"], gold["weight_delta_grams"]), (1, D("154.286")))
+        self.assertEqual(self.db.making[0]["amount_delta"], D("9000.00"))
+        self.assertEqual([(g["karat_id"], g["credited_weight_grams"]) for g in self.db.groups.values()], [(3, D("114.286")), (1, D("40.000"))])
+        self.wait_idle()
+        self.assertEqual(self.warnings, [])
+
     def test_the_controls_fit_at_every_target_size(self):
         self.rights(*ALL)
         self.open_suppliers()
@@ -365,6 +415,51 @@ class SupplierPageTests(harness.InvoicePageTests):
         self.click("tabInvoices")
         self.assertTrue(self.item("supplierInvoiceList").property("visible"))
         self.assertEqual(self.warnings, [])
+
+    # ---------------------------------------------------------------- Task 09: balance-after-movement lines are 12 px and stay inside their rows
+    def balance_lines(self, ledger_name):
+        """The visible «الرصيد: …» lines of one ledger and the row that holds each (ListView delegates are not QObject children)."""
+        from tests.test_customer_picker import text_items
+        ledger = self.item(ledger_name)
+        found = []
+        for row in ledger.property("contentItem").childItems():
+            if row.height() <= 0:
+                continue
+            for line in text_items(row):
+                if line.property("text").lstrip("‏").startswith("الرصيد:"):
+                    found.append((row, line))
+        return found
+
+    def test_ledger_balance_lines_are_12_px_and_inside_their_rows_at_every_size(self):
+        from tests.test_customer_picker import inside, px, scene_rect
+        self.rights(*ALL)
+        self.open_suppliers()
+        self.posted_invoice()
+        findings = []
+        for tab, ledger in (("tabGold", "supplierGoldLedger"), ("tabMaking", "supplierMakingLedger")):
+            self.click(tab)
+            for width, height in harness.SIZES:
+                self.root.setWidth(width)
+                self.root.setHeight(height)
+                QTest.qWait(200)
+                lines = self.balance_lines(ledger)
+                label = f"{ledger} {width}x{height}"
+                if not lines:
+                    findings.append(f"{label}: no balance line found")
+                for row, line in lines:
+                    if px(line) != 12:
+                        findings.append(f"{label}: balance line is {px(line)} px, expected 12")
+                    if not inside(scene_rect(line), scene_rect(row)):
+                        findings.append(f"{label}: {line.property('text')[:24]!r} {scene_rect(line)} is outside its row {scene_rect(row)}")
+        self.assertEqual(findings, [], "\n  " + "\n  ".join(findings))
+        self.assertEqual(self.warnings, [])
+
+    def test_gold_breakdown_rows_use_the_body_font_not_the_table_header_font(self):
+        source = (Path(__file__).resolve().parents[1] / "qml" / "SuppliersPage.qml").read_text(encoding="utf-8")
+        start = source.index("model: page.detail.goldBreakdown")
+        snippet = source[start:start + 400]
+        self.assertIn("font.pixelSize: theme.fontBody", snippet)
+        self.assertNotIn("fontTableHeader", snippet.split("}")[0])
 
     def open_intake(self, invoice_id):
         dialog = self.item("supplierIntakeDialog")

@@ -378,8 +378,11 @@ def _parse_amount(text, code, message):
 
 
 def settlement(draft, total, customer_id):
-    """(legs as (PaymentInput, amount), money paid, account part, problems): real OUT money + the explicit
-    customer-account part must equal the Return total exactly; no fallback, no fake zero payment."""
+    """(legs as (PaymentInput, amount), money paid, account part, waived, problems).
+
+    Owner 2026-11-27: the Return accepts what was really settled (real OUT money + the explicit customer-account part). LESS than the total is accepted and the
+    rest is recorded as `waived` (never a payment, never an account entry); MORE than the total is refused, and nothing entered at all is refused too
+    (SETTLEMENT_INCOMPLETE: a Return is never saved with the whole total waived by omission). No fallback, no fake zero payment."""
     problems, legs, account = [], [], ZERO
     if draft.account_amount not in (None, ""):
         try:
@@ -403,12 +406,19 @@ def settlement(draft, total, customer_id):
         problems.append(ReturnError("ACCOUNT_NEEDS_CUSTOMER",
                                     "لا يمكن استخدام حساب العميل: الفاتورة الأصلية بدون عميل مسجل."))
     paid = sum((amount for _, amount in legs), ZERO)
-    if not problems and paid + account != total:
-        remaining = total - paid - account
-        problems.append(ReturnError(
-            "AMOUNT_MISMATCH" if remaining < 0 else "SETTLEMENT_INCOMPLETE",
-            f"المدفوع للعميل وحسابه {paid + account:,.2f} ج لا يساوي إجمالي المرتجع {total:,.2f} ج."))
-    return legs, paid, account, problems
+    waived = ZERO
+    if not problems:
+        settled = paid + account
+        if settled > total:
+            problems.append(ReturnError(
+                "AMOUNT_MISMATCH", f"المدفوع للعميل وحسابه {settled:,.2f} ج أكبر من إجمالي المرتجع {total:,.2f} ج."))
+        elif settled == 0:
+            problems.append(ReturnError(
+                "SETTLEMENT_INCOMPLETE",
+                f"اكتب المبلغ المدفوع فعليًا من إجمالي المرتجع {total:,.2f} ج؛ ما لا يُدفع يُسجَّل متنازَلًا عنه."))
+        else:
+            waived = total - settled
+    return legs, paid, account, waived, problems
 
 
 def return_summary(row):
@@ -447,7 +457,7 @@ def return_summary(row):
             "refund_basis": _money(row.get("refund_basis", row["total_amount"])),
             "rounding_adjustment": _money(row.get("rounding_adjustment") or ZERO),
             "total_amount": _money(row["total_amount"]), "money_paid": _money(row["money_paid"]),
-            "account_amount": _money(row["account_amount"]),
+            "account_amount": _money(row["account_amount"]), "waived_amount": _money(row.get("waived_amount") or 0),
             "payments": [{"method_code": p["payment_method_code"], "amount": _money(p["amount"]),
                           "account_name": p.get("bank_account_name")} for p in row.get("payments", [])],
             "notes": row.get("notes") or ""}
@@ -646,7 +656,7 @@ class ReturnService:
         invoice, now, window, price_set, lines, header, approval, account_problems = self._read(read)
         valued = totals(lines)
         gold, making, total = valued["gold"], valued["making"], valued["total"]
-        _, paid, account, problems = settlement(draft, total, invoice.get("customer_id"))
+        _, paid, account, waived, problems = settlement(draft, total, invoice.get("customer_id"))
         if total <= 0:
             problems.insert(0, ReturnError("REFUND_TOO_SMALL", "قيمة المرتجع بعد التقريب صفر."))
         problems = list(problems) + list(account_problems)
@@ -667,6 +677,7 @@ class ReturnService:
                 "valuation_mode": valued["mode"], "refund_basis": _money(valued["basis"]),
                 "rounding_adjustment": _money(valued["rounding"]),
                 "total_amount": _money(total), "money_paid": _money(paid), "account_amount": _money(account),
+                "waived_amount": _money(waived),
                 "making_window_open": window["making_window_open"], "requires_approval": window["requires_approval"],
                 "expired": window["expired"], "approval_state": approval_state, "selection_hash": selection_hash,
                 "price_token": price_set.price_token, "price_status": price_set.status,
@@ -867,7 +878,7 @@ class ReturnService:
             if total <= 0:
                 raise ReturnError("REFUND_TOO_SMALL", "قيمة المرتجع بعد التقريب صفر.")
             # The FINAL rounded refund is what is settled (cash / bank / customer account); never another amount.
-            legs, paid, account, problems = settlement(draft, total, invoice.get("customer_id"))
+            legs, paid, account, waived, problems = settlement(draft, total, invoice.get("customer_id"))
             customer = None
             if account:
                 customer = invoices.lock_customer(invoice["customer_id"])
@@ -906,9 +917,11 @@ class ReturnService:
             details = {"selection": selection, "selection_hash": selection_hash, "age_days": window["age_days"],
                        "making_window_open": window["making_window_open"],
                        "payments": [{"method": p.method_code, "amount": a} for p, a in legs]}
+            if waived != 0:
+                details["waived_amount"] = waived          # the part of the total nobody settled (also the waived_amount column)
             returns.finalize_header(return_id=return_id, making_window_open=window["making_window_open"],
                                     gold_amount=gold, making_refund=making, money_paid=paid, account_amount=account,
-                                    price_snapshot=snapshot, details=details, notes=notes,
+                                    waived_amount=waived, price_snapshot=snapshot, details=details, notes=notes,
                                     finalized_by_user_id=actor.user_id, finalized_at=now, valuation=valued)
             review_ids, movement_ids, hold_ids = [], [], []
             for karat_id in sorted({l.karat_id for l in lines if l.inventory_item_id}):
@@ -991,6 +1004,7 @@ class ReturnService:
                 "gold_amount": _money(gold), "making_refund": _money(making), "valuation_mode": valued["mode"],
                 "refund_basis": _money(valued["basis"]), "rounding_adjustment": _money(valued["rounding"]),
                 "total_amount": _money(total), "money_paid": _money(paid), "account_amount": _money(account),
+                "waived_amount": _money(waived),
                 "inspection_reviews": len(review_ids), "scrap_holds": len(hold_ids)}
 
     @staticmethod
