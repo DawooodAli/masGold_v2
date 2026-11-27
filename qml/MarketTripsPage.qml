@@ -22,6 +22,13 @@ Item {
     function openTrade(kind, partyId) {
         tradeKind = kind
         tradeParty = String(partyId)
+        tradeTrip = ""
+        // The custody list is loaded only when this page is shown: coming straight from the suppliers page it may be empty (or on the archive tab), so it is
+        // asked for here first and the trade waits for the answer (owner 2026-11-27: the button did nothing).
+        if (vm && vm.canManage) {
+            if (vm.tripTab !== "ACTIVE") vm.showTripTab("ACTIVE")
+            vm.refresh()
+        }
         runTrade()
     }
     property string tradeTrip: ""
@@ -32,7 +39,12 @@ Item {
             var trips = vm.trips || []
             for (var i = 0; i < trips.length; ++i)
                 if (trips[i].status === "OPEN") open.push(trips[i])
-            if (open.length === 0) { tradeKind = ""; return }
+            if (open.length === 0) {
+                if (vm.busy) return                                                       // the list is still being loaded: runTrade runs again when it changes
+                tradeKind = ""
+                noCustodyNotice.open()                                                    // never a silent no-op
+                return
+            }
             if (open.length > 1) {                                                        // the owner chooses which custody takes the trade
                 if (!tripPicker.opened) { tripPicker.choices = open; tripPicker.open() }
                 return
@@ -48,6 +60,24 @@ Item {
         tradeTrip = ""
         if (kind === "BUY") { goldBuyDialog.openFor(detail.id); goldBuyDialog.pendingVendor = party }
         else { goldSaleDialog.openFor(detail.id); goldSaleDialog.pendingBuyer = party }
+    }
+    Popup {
+        id: noCustodyNotice
+        objectName: "noCustodyNotice"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(380, page.width - 40)
+        modal: true
+        padding: 14
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { radius: 6; color: theme.panel; border.color: theme.gold; border.width: 1 }
+        contentItem: ColumnLayout {
+            spacing: 10
+            Txt { Layout.fillWidth: true; text: "لا توجد عهدة سوق مفتوحة"; color: theme.gold; font.bold: true }
+            Txt { objectName: "noCustodyNoticeText"; Layout.fillWidth: true; wrapMode: Text.WordWrap; elide: Text.ElideNone
+                  text: "شراء الذهب من المورد وبيعه له يُسجَّل على عهدة سوق مفتوحة. افتح عهدة من صفحة «عهدة السوق» ثم أعد المحاولة." }
+            Btn { objectName: "noCustodyNoticeClose"; Layout.alignment: Qt.AlignRight; text: "حسنًا"; primary: true; onClicked: noCustodyNotice.close() }
+        }
     }
     Popup {
         id: tripPicker

@@ -237,6 +237,45 @@ class GoldSaleUiTests(base.MarketTripHeatPageTests):
         self.assertEqual(self.warnings, [])
 
 
+    def test_the_buy_button_works_when_the_custody_page_was_never_opened_or_the_archive_tab_is_shown(self):
+        """Owner 2026-11-27: the list is loaded only when the custody page is shown; from the suppliers page it was empty and the button did nothing."""
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        self.logo_trip()
+        suppliers = self.root.findChild(QObject, "suppliersPage")
+        self.root.setProperty("currentPage", 14)
+        QTest.qWait(100)
+        for label, prepare in (("never loaded", lambda: setattr(self.tvm, "_trips", [])), ("archive tab", lambda: self.tvm.showTripTab("ARCHIVE"))):
+            with self.subTest(state=label):
+                prepare()
+                self.tvm.changed.emit()
+                QTest.qWait(100)
+                QMetaObject.invokeMethod(suppliers, "tradeRequested", Qt.DirectConnection, Q_ARG(str, "BUY"), Q_ARG(str, "10"))
+                self.wait_until(lambda: self.item("tripGoldBuyDialog").property("opened"), "the buy dialog opened after loading the custody list")
+                self.assertFalse(self.item("noCustodyNotice").property("opened"))
+                self.item("tripGoldBuyDialog").close()
+                QTest.qWait(150)
+                self.root.setProperty("currentPage", 14)
+                QTest.qWait(100)
+        self.assertEqual(self.warnings, [])
+
+    def test_without_an_open_custody_the_owner_is_told_instead_of_a_silent_nothing(self):
+        self.root.setWidth(1080)
+        self.root.setHeight(680)
+        suppliers = self.root.findChild(QObject, "suppliersPage")
+        self.root.setProperty("currentPage", 14)
+        QTest.qWait(100)
+        for kind in ("BUY", "SELL"):
+            with self.subTest(kind=kind):
+                QMetaObject.invokeMethod(suppliers, "tradeRequested", Qt.DirectConnection, Q_ARG(str, kind), Q_ARG(str, "10"))
+                self.wait_until(lambda: self.item("noCustodyNotice").property("opened"), "the no-custody notice")
+                self.assertIn("عهدة سوق مفتوحة", self.text("noCustodyNoticeText"))
+                self.assert_inside_window(self.item("noCustodyNoticeClose"))
+                self.assertFalse(self.item("tripGoldBuyDialog").property("opened") or self.item("tripGoldSaleDialog").property("opened"))
+                self.click("noCustodyNoticeClose")
+                self.wait_until(lambda: not self.item("noCustodyNotice").property("visible"), "notice closed")
+        self.assertEqual(self.warnings, [])
+
     def test_with_two_open_custodies_the_owner_chooses_which_one_takes_the_trade(self):
         self.root.setWidth(1080)
         self.root.setHeight(680)
